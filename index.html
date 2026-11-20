@@ -365,6 +365,8 @@ function toast(t) { S.toast = t; render(); clearTimeout(toast.t); toast.t = setT
 
 /* ---------- elaboración: cálculo ---------- */
 function marcaLetra(m) { return m === "AM" ? "AM" : (m || "?")[0]; }
+// número de lote del día: el siguiente a los ya emitidos con esa fecha de emisión (incluye anuladas, para no repetir)
+function nextLoteN(fecha) { const ns = S.list.filter(o => o.tipo === "E" && o.em?.v?.fecha === fecha).map(o => +o.em.v.n || 0); return (ns.length ? Math.max(...ns, ns.length) : 0) + 1; }
 function loteE(fecha, cod, n) { const P = PROP[cod]; if (!P || !fecha || !n) return ""; const [y, m, d] = fecha.split("-"); return `${d}${m}${y.slice(2)}-${marcaLetra(P.m)}${P.a}${n}`; }
 function vtoDeFecha(fecha) { if (!fecha) return ""; const [y, m] = fecha.split("-"); return `${m}/${+y + 3}`; }
 function vtoDeLote(l) { const m = /^(\d{2})(\d{2})(\d{2})-/.exec(l || ""); return m ? `${m[2]}/${2000 + +m[3] + 3}` : ""; }
@@ -433,7 +435,7 @@ async function sign(o, path, v, create) {
     const ref = S.db.doc((o.col || "ordenes") + "/" + o.id);
     if (create) await ref.set({ ...create, ...nest(path, { v, f }), mod: at });
     else await ref.update({ ...nest(path, { v, f }), mod: at });
-    toast("Registrado y firmado · " + fdt(at)); TOUCHED.clear();
+    if (!S.quietSign) { toast("Registrado y firmado · " + fdt(at)); TOUCHED.clear(); }
     S.busy = false; return true;
   } catch (e) {
     S.busy = false;
@@ -486,11 +488,13 @@ async function boot() {
       if (S.view.s === "list" && !m.has("supervisor")) { if (m.has("planificacion")) S.view.s = "plan"; else if (m.has("op_elab") || m.has("op_env") || m.has("operario")) S.view.s = "midia"; } } render(); }, () => { });
   S.db.doc("cfg/tanques").onSnapshot(s => { S.tqcfg = (s.exists && s.data().t) || {}; render(); }, () => { });
   S.db.collection("alcohol").orderBy("creado", "desc").limit(400).onSnapshot(s => { S.alcList = s.docs.map(d => ({ id: d.id, ...d.data() })); render(); }, () => { });
+  if (window.STANDALONE) S.db.doc("cfg/sharepoint").onSnapshot(s => { const first = !S.spcfg; S.spcfg = s.exists ? s.data() : {}; if (first && typeof spAuto === "function") spAuto(); render(); }, () => { });
   S.db.doc("cfg/equipos").onSnapshot(s => { S.eqcfg = s.exists ? s.data() : null; render(); }, () => { });
   S.db.doc("cfg/catalogo").onSnapshot(s => { if (s.exists) { applyCatalog(s.data()); render(); } }, () => { });
   S.db.collection("usuarios").onSnapshot(s => { S.users = {}; s.docs.forEach(d => S.users[d.id] = d.data()); render(); }, () => { });
   S.db.collection("ordenes").orderBy("creado", "desc").limit(400).onSnapshot(s => {
     S.orders = {}; S.list = s.docs.map(d => { const o = { id: d.id, ...d.data() }; S.orders[d.id] = o; return o; });
+    if (S.view.s === "new37" && S.draft && !S.draft.nMan) { S.draft.n = String(nextLoteN(S.draft.fecha)); const el = document.getElementById("n_n"); if (el) el.value = S.draft.n; }
     if (!s.metadata.fromCache) { S.loaded = true; S.slow = false; clearTimeout(timer); }
     render(); if (S.view.s === "order") verifyOrder(S.orders[S.view.id]);
   }, e => { S.err = e.code; clearTimeout(timer); render(); });
@@ -567,6 +571,8 @@ function listView() {
   const fijo = tipoFijo(), t = S.view.tab, tipo = fijo || S.view.tipo, q = S.q.trim().toUpperCase();
   const rows = S.list.filter(o => { const [, , closed] = estado(o); if ((t === "abiertas") === closed) return false; if (tipo && o.tipo !== tipo) return false;
     if (q && !(`${o.lote} ${o.cod} ${o.em?.v?.det || ""}`.toUpperCase().includes(q))) return false; return true; });
+  // en curso: primero las más viejas (en el orden en que se emitieron); cerradas: las más recientes arriba
+  rows.sort((a, b) => { const k = x => `${x.em?.v?.fecha || ""}|${String(x.em?.v?.n || 0).padStart(3, "0")}|${x.creado || ""}`; return t === "abiertas" ? (k(a) < k(b) ? -1 : 1) : (k(a) < k(b) ? 1 : -1); });
   rows.forEach(o => want(o.por));
   const nOpen = S.list.filter(o => !estado(o)[2] && (!fijo || o.tipo === fijo)).length;
   return `<div class="bar"><h2>${lblOrdenes()}</h2><span class="sp"></span>
@@ -613,12 +619,14 @@ function new37View() {
   const tipos = [...new Set(DATA.prop.filter(p => !d.marca || p.m === d.marca).map(p => p.t))].sort();
   const lista = DATA.prop.filter(p => d.marca && d.tipo && p.m === d.marca && p.t === d.tipo);
   const opts = lista.map(p => [p, aromaDe(p)]).sort((a, b) => a[1].localeCompare(b[1], "es")).map(([p, a]) => `<option value="${esc(a)}"></option>`).join("");
-  return `<div class="bar"><button class="sm" data-act="go" data-s="list">← Volver</button><h2>Nueva orden de elaboración</h2><span class="step">P08 · Form 37</span></div>
+  const old = d.replace ? S.orders[d.replace] : null, cap = tqCfg(d.tqp)?.cap;
+  return `<div class="bar"><button class="sm" data-act="${old ? "open" : "go"}" ${old ? `data-id="${esc(old.id)}"` : `data-s="list"`}>← Volver</button><h2>${old ? "Modificar orden de elaboración" : "Nueva orden de elaboración"}</h2><span class="step">P08 · Form 37</span></div>
+  ${old ? `<div class="banner warn">Al guardar, la orden <b class="mono">${esc(old.lote)}</b> queda anulada con el motivo "Modificada" y se emite una nueva con estos datos. Así queda registro de los dos.</div>` : ""}
   <div class="card hd" data-draft="1"><div class="grid">
+   <label class="field"><span class="lbl">Tanque previsto</span><input id="n_tqp" value="${esc(d.tqp || "")}" data-dr="tqp" list="dl_tq" placeholder="N° de tanque">${dlTanques()}${cap ? `<span class="note">${esc(TQ_TIPOS[tqCfg(d.tqp)?.tipo] || "")} · ${fmt(cap, 0)} kg</span>` : ""}</label>
    <label class="field"><span class="lbl">Fecha de emisión</span><input id="n_fecha" type="date" value="${esc(d.fecha)}" data-dr="fecha"></label>
    <label class="field"><span class="lbl">N° lote del día</span><input id="n_n" inputmode="numeric" value="${esc(d.n)}" data-dr="n"></label>
-   <label class="field"><span class="lbl">Cantidad solicitada (kg)</span><input id="n_kg" inputmode="decimal" value="${esc(d.kg)}" data-dr="kg"></label>
-   <label class="field"><span class="lbl">Tanque previsto</span><input id="n_tqp" value="${esc(d.tqp || "")}" data-dr="tqp" list="dl_tq">${dlTanques()}</label>
+   <label class="field"><span class="lbl">Cantidad solicitada (kg)</span><input id="n_kg" inputmode="decimal" value="${esc(d.kg)}" data-dr="kg">${cap && num(d.kg) === cap ? `<span class="note">Capacidad del tanque ${esc(d.tqp)}; se puede cambiar.</span>` : ""}</label>
    <label class="field"><span class="lbl">Fecha programada</span><input id="n_pf" type="date" value="${esc(d.pfecha || d.fecha)}" data-dr="pfecha"></label>
 </div>
    <div class="grid">
@@ -630,7 +638,7 @@ function new37View() {
 function prev37() {
   const d = S.draft, P = PROP[d.cod], kg = num(d.kg), lote = loteE(d.fecha, d.cod, d.n);
   if (!P || !(kg > 0) || !lote) return `<p class="note">Completá fecha, N° de lote del día, Cód_Alfa y kg para ver el lote y la formulación.</p>`;
-  const dup = S.list.some(o => o.tipo === "E" && o.lote === lote && !o.sec?.anu);
+  const dup = S.list.some(o => o.tipo === "E" && o.lote === lote && !o.sec?.anu && o.id !== d.replace);
   const L = f37Lines(d.cod, kg);
   return `<div class="hrow"><div><span class="lbl">N° de lote</span><span class="lote" style="white-space:nowrap">${esc(lote)}</span></div><div><span class="lbl">Vto. lote</span><b class="mono">${vtoDeFecha(d.fecha)}</b></div><div><span class="lbl">Marca</span><b>${esc(MARCAS[P.m] || P.m)}</b></div><div><span class="lbl">Cód_Alfa</span><b class="mono">${esc(P.c)}</b></div></div>
    <div><span class="lbl">Detalle</span><div><b>${esc(P.d)}</b></div></div>
@@ -638,7 +646,7 @@ function prev37() {
    ${dup ? `<div class="banner bad">Ya existe una orden con el lote ${esc(lote)}. Cambiá el N° de lote del día.</div>` : ""}
    <div class="tw"><table class="fit"><thead><tr><th>Paso</th><th>Cód_Alfa</th><th>Detalle</th><th class="r">Solicitado (kg)</th><th class="r">%</th></tr></thead><tbody>
    ${L.map((l, i) => `<tr><td>${i + 1}. ${l.t}</td><td class="mono">${esc(l.c)}</td><td>${esc(l.d)}</td><td class="r num">${fmt(l.q, 2)}</td><td class="r num">${fmt(l.pct * 100, 2)} %</td></tr>`).join("")}</tbody></table></div>
-   <div class="bar"><span class="note">Al emitir, los datos de la cabecera y la formulación quedan fijos.</span><button class="pri sp" data-act="emit37" ${dup ? "disabled" : ""}>Emitir orden</button></div>`;
+   <div class="bar"><span class="note">Al emitir, los datos de la cabecera y la formulación quedan fijos.</span><button class="pri sp" data-act="emit37" ${dup ? "disabled" : ""}>${d.replace ? "Guardar cambios" : "Emitir orden"}</button></div>`;
 }
 
 /* ---------- nueva orden F41 ---------- */
@@ -727,6 +735,8 @@ const pend = (txt) => `<p class="note">${txt}</p>`;
 function preseaTxt(o) { const p = o.sec?.presea?.v; if (p?.asset) return "PDF cargado"; const r = ordRec(o); return r.ord || r.rec ? `${r.ord || "—"} · ${r.rec || "—"}` : "Pendiente"; }
 const fsize = b => b > 1048576 ? fmt(b / 1048576, 1) + " MB" : fmt(b / 1024, 0) + " KB";
 function ordRec(o) { const p = o.sec?.presea?.v; return p || { ord: o.em.v.ord, rec: o.em.v.rec }; }
+// si el PDF de Presea ya se pasó a SharePoint, el enlace queda en el último registro de archivo
+function spPreseaUrl(o) { const a = o?.sec?.arch; if (!a) return null; const ks = Object.keys(a).map(Number).sort((x, y) => y - x); for (const k of ks) if (a[k].v.presea?.url) return a[k].v.presea.url; return null; }
 function preseaBlock(o, L, ready, step, msg) {
   const e = o.sec?.presea;
   if (e) {
@@ -752,7 +762,9 @@ function orderView(o, RO) {
   const h = o.em.v; want(o.por); S.ctx = o.tipo;
   const [e, c] = estado(o);
   const head = `${RO ? "" : `<div class="bar"><button class="sm" data-act="go" data-s="list">← Órdenes</button><span class="sp"></span>
+     ${(() => { const a = o.sec?.arch, ks = a ? Object.keys(a).map(Number).sort((x, y) => x - y) : []; const u = ks.length && a[ks[ks.length - 1]].v.url; return u ? `<a class="btn sm ghost" href="${esc(u)}" target="_blank" rel="noopener">Ver en SharePoint</a>` : ""; })()}
      ${S.dl ? `<button class="sm ghost" data-act="dl" data-id="${esc(o.id)}">Descargar orden</button>` : ""}
+     ${o.tipo === "E" && can("supervisor") && !Object.keys(o.sec || {}).length ? `<button class="sm ghost" data-act="mod37" data-id="${esc(o.id)}">Modificar orden</button>` : ""}
      ${can("supervisor") && !o.sec?.anu && !closed(o) ? `<button class="sm ghost" data-act="anular" data-id="${esc(o.id)}">Anular orden</button>` : ""}</div>`}
    <div class="card hd"><div class="hd-top"><div><div class="lbl">${o.tipo === "E" ? "Orden de elaboración · P08 Form 37" : "Orden de envasado · P08 Form 41"}</div><div class="lote">${esc(o.lote)}</div></div>
     <span class="chip ${c}" style="font-size:13px">${esc(e)}</span></div>
@@ -804,16 +816,16 @@ function elabSections(o, L) {
     ? `<div class="kv"><div><span class="lbl">Peso teórico</span><b class="num">${fmt(s.cie.v.teo)} kg</b></div><div><span class="lbl">Peso neto</span><b class="num">${fmt(s.cie.v.neto)} kg</b></div><div><span class="lbl">Rendimiento</span><b class="num">${fmt(s.cie.v.rend, 1)} %</b></div></div>${sigLine(s.cie, "Operario de elaboración")}`
     : `<div class="kv"><div><span class="lbl">Peso teórico</span><b class="num">${fmt(h.kg)} kg</b></div><div><span class="lbl">Peso neto (suma de fraccionados)</span><b class="num">${fmt(neto)} kg</b></div><div><span class="lbl">Rendimiento</span><b class="num">${fmt(neto / h.kg * 100, 1)} %</b></div></div>
        ${L && can("operario") ? `<div class="bar"><span class="note">${allW ? "Se firma con los valores que ves arriba." : "Primero registrá todas las pesadas."}</span><button class="pri sp" data-act="cie" ${allW ? "" : "disabled"}>Firmar cierre</button></div>` : pend("Pendiente.")}`));
-  // limpieza del filtro (antes de recircular)
-  const fE = eqArea("elab", true);
-  out.push(secBox("", "Limpieza del filtro", limChip(s.lim) || `<span class="chip">Pendiente</span>`, limBlock(o, L, "lim", { eqs: fE, def: [s.rec?.i?.v?.eq || filtroElabDef()].filter(Boolean),
-    intro: "Antes de recircular, registrá la limpieza del equipo de filtrado (y la cañería) con el alcohol que usaste.", pend: "La registra el operario antes de recircular." })));
   // 4 recirculación
   out.push(secBox("4", "Recirculación", s.rec?.e ? `<span class="chip ok">Completa</span>` : s.rec?.i ? `<span class="chip ac">En curso</span>` : `<span class="chip">Pendiente</span>`,
     `<ol class="instr"><li>Conectar la manguera a la válvula inferior, al otro extremo de la bomba y de ahí a la válvula de la parte superior.</li><li>Tiempo mínimo 10 min. Realizar la recirculación de forma moderada.</li></ol>` +
     (s.rec?.i ? `<p class="note" style="margin:0">Equipo de filtrado: <b>${esc(eqName(s.rec.i.v?.eq || filtroElabDef() || "—"))}</b></p>` : eqArea("elab", true).filter(k => eqAll()[k].tipo === "filtro").length > 1 && L && can("operario") && s.cie ? `<label class="field" style="max-width:320px"><span class="lbl">Equipo de filtrado</span><select id="rec_eq">${eqArea("elab", true).filter(k => eqAll()[k].tipo === "filtro").map(k => `<option value="${esc(k)}">${esc(eqName(k))}</option>`).join("")}</select></label>` : "") +
     stampPair(o, ["sec", "rec"], "recirculación", L && can("operario") && !!s.cie, 10, "Firmá el cierre de elaboración antes de recircular.")));
 
+  // limpieza del filtro (después de recircular)
+  const fE = eqArea("elab", true);
+  out.push(secBox("", "Limpieza del filtro", limChip(s.lim) || `<span class="chip">Pendiente</span>`, limBlock(o, L, "lim", { eqs: fE, def: [s.rec?.i?.v?.eq || filtroElabDef()].filter(Boolean),
+    intro: "Al terminar la recirculación, registrá la limpieza del equipo de filtrado (y la cañería) con el alcohol que usaste.", bloq: !s.rec?.e ? "Se registra al terminar la recirculación." : "", pend: "La registra el operario al terminar la recirculación." })));
   // 5 control de calidad y ajuste (antes del macerado)
   const ctlOk = ctlResuelto(o);
   out.push(secBox("5", "Control de Calidad · ajuste", ctlOk ? `<span class="chip ok">${ctlOk === "legacy" ? "—" : "Sin más ajustes"}</span>` : s.ctl ? `<span class="chip warn">Ajuste</span>` : `<span class="chip">Pendiente</span>`, ctlBlock(o, L)));
@@ -842,17 +854,30 @@ function ctlResuelto(o) {
   const ks = ctlRounds(o); if (!ks.length) return false; const last = s.ctl[ks[ks.length - 1]];
   return last.v.res === "SIN AJUSTE" ? "ok" : false;
 }
+// después de cada ajuste: recirculación de 10 min con el filtro y limpieza del filtro
+const ARC = { caj: "cajrec", aj: "ajrec" };
+function recAjDone(o, A, n) { return !!o.sec?.[ARC[A]]?.[n]?.e; }
+function recAjBlock(o, n, L, A) {
+  const s = o.sec || {}, key = ARC[A], g = s[key]?.[n] || {}, fE = eqArea("elab", true), lk = "lim" + key + n;
+  let html = `<div class="line"><div class="line-h"><b>Recirculación después del ajuste ${n}</b>${g.e ? `<span class="chip ok">Completa</span>` : g.i ? `<span class="chip ac">En curso</span>` : `<span class="chip">Pendiente</span>`}</div>
+    <p class="note" style="margin:0">Recircular como mínimo 10 minutos con el equipo de filtrado para homogeneizar lo agregado.</p>`;
+  html += stampPair(o, ["sec", key, String(n)], "recirculación", L && can("operario"), 10, "La hace el operario de elaboración.");
+  html += `</div>`;
+  if (g.e) html += `<div class="line"><div class="line-h"><b>Limpieza del filtro · ajuste ${n}</b>${limChip(s[lk]) || `<span class="chip">Pendiente</span>`}</div>${limBlock(o, L, lk, { eqs: fE, def: [g.i?.v?.eq || filtroElabDef()].filter(Boolean), pend: "La registra el operario al terminar la recirculación." })}</div>`;
+  return html;
+}
 function ctlBlock(o, L) {
   const s = o.sec || {}, ks = ctlRounds(o);
   let html = `<p class="note" style="margin:0">Calidad indicará si debe ajustarse o no el granel elaborado. Si hay que ajustar, indica qué insumo y qué cantidad; el operario pesa, registra el lote y firma el ajuste; después Calidad lo revisa.</p>`;
   ks.forEach(n => { const e = s.ctl[n];
     html += `<div class="line"><div class="line-h"><b>Control ${n}</b><span class="chip ${e.v.res === "SIN AJUSTE" ? "ok" : "warn"}">${e.v.res === "SIN AJUSTE" ? "No requiere ajuste" : "Requiere ajuste"}</span></div>
       ${e.v.obs ? `<p class="note" style="margin:0">Obs.: ${esc(e.v.obs)}</p>` : ""}${sigLine(e, "Calidad")}</div>`;
-    if (e.v.res === "AJUSTAR") html += ajusteBlock(o, n, L, "ctl", "caj"); });
+    if (e.v.res === "AJUSTAR") { html += ajusteBlock(o, n, L, "ctl", "caj"); if (ajusteListo(o, n, "ctl", "caj")) html += recAjBlock(o, n, L, "caj"); } });
   if (ctlResuelto(o) || s.anu) return html;
   if (!s.rec?.e) return html + pend("Calidad controla después de la recirculación.");
   const last = ks.length ? s.ctl[ks[ks.length - 1]] : null;
   if (last && last.v.res === "AJUSTAR" && !ajusteListo(o, ks[ks.length - 1], "ctl", "caj")) return html;
+  if (last && last.v.res === "AJUSTAR" && !recAjDone(o, "caj", ks[ks.length - 1])) return html + pend("Calidad vuelve a controlar después de la recirculación del ajuste.");
   if (!(L && can("calidad"))) return html + pend("Pendiente de Calidad: indicar si hay que ajustar el granel.");
   const n = (ks[ks.length - 1] || 0) + 1;
   return html + `<div class="line"><b>Control ${n}${n > 1 ? " · Después del ajuste" : ""}</b>
@@ -905,10 +930,10 @@ function dicBlock(o, L) {
     const e = d[n];
     html += `<div class="line"><div class="line-h"><b>Dictamen ${n}</b><span class="chip ${e.v.res === "APROBADO" ? "ok" : e.v.res === "RECHAZADO" ? "bad" : "warn"}">${esc(e.v.res)}</span></div>
       <div class="kv"><div><span class="lbl">Densidad a 15 °C</span><b class="num">${e.v.dens ? fmt(e.v.dens, 4) + " g/mL" : "—"}</b></div><div><span class="lbl">Observación</span><b>${esc(e.v.obs || "—")}</b></div></div>${sigLine(e, "Calidad")}</div>`;
-    if (e.v.res === "A AJUSTAR") html += ajusteBlock(o, n, L);
+    if (e.v.res === "A AJUSTAR") { html += ajusteBlock(o, n, L); if (ajusteListo(o, n)) html += recAjBlock(o, n, L, "aj"); }
   });
   const last = ks.length ? d[ks[ks.length - 1]] : null;
-  const ajPend = last && last.v.res === "A AJUSTAR" && !ajusteListo(o, ks[ks.length - 1]);
+  const ajPend = last && last.v.res === "A AJUSTAR" && !(ajusteListo(o, ks[ks.length - 1]) && recAjDone(o, "aj", ks[ks.length - 1]));
   const open = !last || (last.v.res === "A AJUSTAR" && !ajPend);
   if (!open) {
     if (last && last.v.res === "APROBADO" && !densDe(o)) html += o.sec?.den ? "" : (S.write && can("calidad") && !o.sec?.anu
@@ -1116,16 +1141,22 @@ const ACT = {
   mcancel: () => { S.modal = null; render(); },
   mok: async () => { const m = S.modal; if (!m) return; const ok = await m.onOk(); if (ok !== false) S.modal = null; render(); },
   new: d => {
-    if (d.t === "E") { const f = today(); const n = S.list.filter(o => o.tipo === "E" && o.em?.v?.fecha === f).length + 1; S.draft = { fecha: f, n: String(n), kg: "", cod: "", tq: "", ord: "", rec: "" }; S.view.s = "new37"; }
+    if (d.t === "E") { const f = today(); S.draft = { fecha: f, n: String(nextLoteN(f)), kg: "", cod: "", tq: "", ord: "", rec: "" }; S.view.s = "new37"; }
     else { S.draft = { fecha: today(), gl: "", fam: "", ar: "", un: "", den: "", ord: "", rec: "", tq: "", prim: [], sec: [] }; S.view.s = "new41"; }
     render(); window.scrollTo(0, 0);
   },
   emit37: () => {
-    const d = S.draft, P = PROP[d.cod], kg = num(d.kg), lote = loteE(d.fecha, d.cod, d.n);
+    const d = S.draft;
+    if (!d.nMan) d.n = String(nextLoteN(d.fecha));
+    if (S.list.some(o => o.tipo === "E" && o.id !== d.replace && o.em?.v?.fecha === d.fecha && +o.em.v.n === +d.n && !o.sec?.anu)) { toast(`Ya hay una orden con el lote N° ${d.n} de ese día. El siguiente libre es ${nextLoteN(d.fecha)}.`); return; }
+    const P = PROP[d.cod], kg = num(d.kg), lote = loteE(d.fecha, d.cod, d.n);
     const h = { fecha: d.fecha, n: +d.n, cod: d.cod, det: P.d, marca: P.m, kg, vto: vtoDeFecha(d.fecha), lines: f37Lines(d.cod, kg) };
-    ask("Emitir orden de elaboración " + lote, `<p>${esc(P.d)} · <b>${fmt(kg)} kg</b></p>`, async () => {
+    const old = d.replace ? S.orders[d.replace] : null;
+    if (old && Object.keys(old.sec || {}).length) { toast("La orden ya empezó: no se puede modificar. Anulala y emití una nueva."); return; }
+    ask((old ? "Guardar cambios · " : "Emitir orden de elaboración ") + lote, `<p>${esc(P.d)} · <b>${fmt(kg)} kg</b></p>`, async () => {
       const id = "E-" + lote + "-" + rid().slice(-4);
-      const ok = await sign({ id }, ["em"], h, { tipo: "E", creado: new Date().toISOString(), por: S.uid, lote, cod: d.cod, plan: { fecha: d.pfecha || d.fecha, seq: nextSeq("E", d.pfecha || d.fecha), linea: null, tq: (d.tqp || "").trim() || null } });
+      if (old) { const a = await sign(old, ["sec", "anu"], { motivo: "Modificada: reemplazada por una nueva emisión (" + lote + ")" }); if (!a) return false; }
+      const ok = await sign({ id }, ["em"], h, { tipo: "E", creado: new Date().toISOString(), por: S.uid, lote, cod: d.cod, plan: { fecha: d.pfecha || d.fecha, seq: old && (planOf(old).fecha === (d.pfecha || d.fecha)) ? planOf(old).seq : nextSeq("E", d.pfecha || d.fecha), linea: null, tq: (d.tqp || "").trim() || null } });
       if (ok) { S.view = { ...S.view, s: "order", id }; S.draft = null; } return ok;
     }, "Emitir y firmar");
   },
@@ -1145,6 +1176,9 @@ const ACT = {
   famtodos: () => { S.draft.todos = !S.draft.todos; render(); },
   badd: d => { S.draft[d.k].push({ c: "", d: "", k: null, q: "" }); $("#prev").innerHTML = prev41(); },
   bdel: d => { S.draft[d.k].splice(+d.i, 1); $("#prev").innerHTML = prev41(); },
+  mod37: d => { const o = S.orders[d.id]; if (!o) return; const h = o.em.v, P = PROP[o.cod] || {};
+    S.draft = { replace: o.id, fecha: h.fecha, n: String(h.n || ""), nMan: true, kg: String(h.kg), cod: o.cod, marca: P.m || h.marca, tipo: P.t || "", aroma: P.d ? aromaDe(P) : "", tqp: o.plan?.tq || "", pfecha: planOf(o).fecha, tq: "", ord: "", rec: "" };
+    S.view.s = "new37"; render(); window.scrollTo(0, 0); },
   anular: () => ask("Anular la orden", `<label class="field"><span class="lbl">Motivo</span><input id="anu_m"></label>`, async () => {
     const m = V("anu_m"); if (!m) { toast("Escribí el motivo de la anulación."); return false; } return sign(cur(), ["sec", "anu"], { motivo: m }); }, "Anular y firmar"),
   ver: () => { const chk = VER_ITEMS.map((_, i) => !!document.getElementById("ver_" + i)?.checked); const tara = num(V("ver_tara")), tq = limTq(cur()) || V("ver_tq");
@@ -1160,8 +1194,9 @@ const ACT = {
     ask("Firmar cierre de elaboración", `<p>Peso neto ${fmt(neto)} kg · rendimiento ${fmt(neto / h.kg * 100, 1)} %</p>`, () => sign(o, ["sec", "cie"], { teo: h.kg, neto, rend: +(neto / h.kg * 100).toFixed(2) })); },
   st: d => { const p = d.p.split("."), obs = V(p.slice(0, -1).join("_") + "_obs"), unP = Math.round(num(V("lle_un")));
     if (p[1] === "lle" && p[2] === "e" && !(unP > 0)) { toast("Completá las unidades producidas antes de finalizar el llenado."); return; }
+    if (["cajrec", "ajrec"].includes(p[1]) && p[3] === "e") { const g = cur().sec?.[p[1]]?.[p[2]]?.i; if (g && clockMin(new Date().toISOString()) - clockMin(g.f.at) < 10) { toast("La recirculación tiene que durar al menos 10 minutos."); return; } }
     if (p[1] === "rec" && p[2] === "e") { const g = cur().sec?.rec?.i; if (g && clockMin(new Date().toISOString()) - clockMin(g.f.at) < 10) { toast("La recirculación tiene que durar al menos 10 minutos."); return; } } ask(d.w, `<p>Hora: <b>${fhm(new Date().toISOString())}</b></p>`, () => { const o = cur(); let v = p[p.length - 1] === "e" && obs ? { obs } : {};
-      if (p[1] === "rec" && p[2] === "i") { const f = V("rec_eq") || filtroElabDef(); if (f) v = { eq: f }; }
+      if ((p[1] === "rec" && p[2] === "i") || (["cajrec", "ajrec"].includes(p[1]) && p[3] === "i")) { const f = V("rec_eq") || filtroElabDef(); if (f) v = { eq: f }; }
       if (p[1] === "lle" && p[2] === "i" && planOf(o).linea) v = { eqs: eqArea(planOf(o).linea, true) };
       if (p[1] === "lle" && p[2] === "e") v = { ...v, un: unP };
       return sign(o, p, v); }); },
@@ -1225,7 +1260,7 @@ const ACT = {
   },
   prdl: async d => { const v = S.orders[d.id].sec.presea.v;
     try { if (S.assets?.fetch) { await S.dl.save({ filename: v.name || "recepcion_presea.pdf", data: await S.assets.fetch(v.asset) }); return; } const r = await fetch("/_blob/" + v.asset); if (!r.ok) throw new Error("http"); await S.dl.save({ filename: v.name || "recepcion_presea.pdf", data: await r.blob() }); }
-    catch (e) { if (e?.code !== "declined") toast("No se pudo descargar el PDF. Probá con Ver PDF."); } },
+    catch (e) { if (e?.code === "declined") return; const u = spPreseaUrl(S.orders[d.id]); if (u) { window.open(u, "_blank", "noopener"); return; } toast("No se pudo descargar el PDF. Probá con Ver PDF."); } },
   tqv: d => { const o = cur(), si = d.v === "1", tq = tqDe(o) || "";
     ask(si ? `Tanque ${tq} vacío` : `Tanque ${tq} con granel`, `<p>${si ? "El tanque quedó vacío. El supervisor va a cargar el scrap de granel." : "El tanque sigue con granel. No se carga scrap en esta orden."}</p>`, () => sign(o, ["sec", "tqv"], { vacio: si, tq })); },
   scrap: () => { const o = cur(), un = Math.round(num(V("sc_un")) || 0), kg = num(V("sc_kg")) || 0; if (un < 0 || kg < 0) { toast("Los valores no pueden ser negativos."); return; }
@@ -1289,6 +1324,9 @@ document.addEventListener("input", e => {
 function onDraft(b, typing) {
   const d = S.draft, k = b.dataset.dr; d[k] = b.value;
   if (S.view.s === "new37") {
+    if (k === "n") d.nMan = true;
+    if (k === "tqp") { const cap = tqCfg(String(d.tqp).trim())?.cap; if (cap > 0) { d.kg = String(cap); const el = $("#n_kg"); if (el) el.value = d.kg; } if (!typing || cap > 0) { const f = document.activeElement?.id; render(); const e2 = f && document.getElementById(f); if (e2) e2.focus(); return; } }
+    if (k === "fecha" && !d.nMan) { d.n = String(nextLoteN(d.fecha)); const el = $("#n_n"); if (el) el.value = d.n; }
     if (k === "marca" || k === "tipo") { if (k === "marca" && !DATA.prop.some(p => p.m === d.marca && p.t === d.tipo)) d.tipo = ""; if (!(PROP[d.cod] && PROP[d.cod].m === d.marca && PROP[d.cod].t === d.tipo)) { d.cod = ""; d.aroma = ""; } render(); return; }
     $("#prev").innerHTML = prev37(); return; }
   if (k === "gl") { const o = S.orders[d.gl]; if (o) { d.ar = PROP[o.cod]?.a || ""; d.marca = o.em.v.marca; const dn = densDe(o); d.den = dn ? String(dn) : ""; } render(); }
@@ -1521,10 +1559,10 @@ function pasoE(o) {
   if (!s.rec.e) return ["Recirculando", "ac"];
   if (!ctlResuelto(o)) { const ks = ctlRounds(o), last = ks.length ? s.ctl[ks[ks.length - 1]] : null;
     if (!last) return ["Espera control de Calidad", "warn"];
-    return s.caj?.[ks[ks.length - 1]]?.fin ? ["Ajuste hecho · revisión de Calidad", "warn"] : ["Ajuste pedido por Calidad", "warn"]; }
+    const nn = ks[ks.length - 1]; return !s.caj?.[nn]?.fin ? ["Ajuste pedido por Calidad", "warn"] : !s.cajrec?.[nn]?.e ? ["Recirculación del ajuste", "ac"] : ["Ajuste hecho · revisión de Calidad", "warn"]; }
   if (!s.mac?.i) return ["Espera OK de Calidad para macerar", "warn"];
   if (!ld) return ["Macerando · espera dictamen", "ac"];
-  if (ld.e.v.res === "A AJUSTAR") return s.aj?.[ld.n]?.fin ? ["Ajuste hecho · espera dictamen", "warn"] : ["Ajuste pedido por Calidad", "warn"];
+  if (ld.e.v.res === "A AJUSTAR") return !s.aj?.[ld.n]?.fin ? ["Ajuste pedido por Calidad", "warn"] : !s.ajrec?.[ld.n]?.e ? ["Recirculación del ajuste", "ac"] : ["Ajuste hecho · espera dictamen", "warn"];
   if (ld.e.v.res === "RECHAZADO") return ["Rechazada", "bad"];
   if (!s.presea) return ["Aprobada · carga en Presea", "ok"];
   return ["Liberada", "ok"];
@@ -1830,7 +1868,8 @@ function datosView() {
       <button class="pri" data-act="upread" ${S.busy ? "disabled" : ""}>Leer planillas</button></div>
   </div>${prev}
   ${tqEditor()}
-  ${eqEditor()}`;
+  ${eqEditor()}
+  ${window.STANDALONE && typeof spCard === "function" ? spCard() : ""}`;
 }
 Object.assign(ACT, {
   upread: async () => {
@@ -1924,7 +1963,7 @@ function limN(e) {
   if (!e) return null;
   if (e.f) return { v: e.v, f: e.f, fe: e.f, done: true };
   if (!e.i?.f) return null;
-  const v = { eqs: e.i.v.eqs || [], fecha: ymdOf(e.i.f.at), ini: hmOf(e.i.f.at), fin: e.e ? hmOf(e.e.f.at) : "", kg: e.e?.v.kg, cod: e.e?.v.cod, obs: e.e?.v.obs || "" };
+  const v = { eqs: e.i.v.eqs || [], fecha: ymdOf(e.i.f.at), ini: hmOf(e.i.f.at), fin: e.e ? hmOf(e.e.f.at) : "", kg: e.e?.v.kg, cod: e.e?.v.cod, lote: e.e?.v.lote || "", obs: e.e?.v.obs || "" };
   return { v, f: e.i.f, fe: e.e?.f || null, done: !!e.e?.f };
 }
 // tanque cargado en la limpieza del tanque de esta orden (la última)
@@ -1933,7 +1972,7 @@ function limChip(m) { const l = Object.values(m || {}).map(limN).filter(Boolean)
 const limT = v => new Date(`${v.fecha}T${v.fin || v.ini || "00:00"}`).getTime();
 function prodE(o) { return (o.em.v.det || o.cod || "").replace(/^ZZ GRANEL\s*/i, ""); }
 function prodV(o) { const h = o.em.v; return `${h.fin || o.cod || ""}${h.det ? " · " + h.det : ""}`; }
-const LIM_KEYS = { E: ["limt", "lim"], V: ["lim"] };
+function limKeys(o) { return Object.keys(o.sec || {}).filter(k => /^lim/.test(k) && !/ok$/.test(k)); }
 function eqEventos() {
   if (S._ev && S._ev.l === S.list && S._ev.c === S.eqcfg && S._ev.t === S.tqcfg) return S._ev.v;
   const ev = [];
@@ -1946,13 +1985,14 @@ function eqEventos() {
         ev.push({ eq: tq, k: "uso", op: "Producción", o, prod: prodE(o), lote: o.lote, ini: s.ver.f.at, fin: s.mac?.i?.f.at || null, by: s.ver.f, obs: s.cie ? `Neto ${fmt(s.cie.v.neto)} kg` : "" });
         if (s.mac?.i) ev.push({ eq: tq, k: "uso", op: "Macerado", o, prod: prodE(o), lote: o.lote, ini: s.mac.i.f.at, fin: fin ? fin.f.at : null, by: s.mac.i.f, finBy: fin?.f, obs: fin ? (ld && fin === ld.e ? "Dictamen " + ld.e.v.res.toLowerCase() : "") : "En reposo" });
       }
+      ["cajrec", "ajrec"].forEach(key => Object.entries(s[key] || {}).forEach(([n, g]) => { if (!g?.i) return; const f = g.i.v?.eq || filtroElabDef(); if (f) ev.push({ eq: f, k: "uso", op: `Recirculación (ajuste ${n})`, o, prod: prodE(o), lote: o.lote, ini: g.i.f.at, fin: g.e?.f.at || null, by: g.i.f, obs: tq ? eqName(tq) : "" }); }));
       if (s.rec?.i) { const f = s.rec.i.v?.eq || filtroElabDef(); if (f) ev.push({ eq: f, k: "uso", op: "Recirculación", o, prod: prodE(o), lote: o.lote, ini: s.rec.i.f.at, fin: s.rec.e?.f.at || null, by: s.rec.i.f, obs: tq ? eqName(tq) : "" }); }
     } else if (s.lle?.i) {
       const eqs = s.lle.i.v?.eqs || (planOf(o).linea ? eqArea(planOf(o).linea, true) : []);
       eqs.forEach(eq => ev.push({ eq, k: "uso", op: "Envasado", o, prod: prodV(o), lote: o.lote, ini: s.lle.i.f.at, fin: s.lle.e?.f.at || null, by: s.lle.i.f, obs: s.pri?.cie ? `${fmt(s.pri.cie.v.net, 0)} un netas` : "" }));
     }
-    (LIM_KEYS[o.tipo] || []).forEach(key => Object.entries(s[key] || {}).forEach(([n, raw]) => { const N = limN(raw); if (!N?.done) return; const e = { v: N.v, f: N.f }, ok = s[key + "ok"]?.[n];
-      (e.v.eqs || []).forEach(eq => ev.push({ eq, k: "lim", op: "Limpieza", o, key, n, e, ok, prod: "", lote: o.lote, ini: e.v.fecha + "T" + e.v.ini, fin: e.v.fecha + "T" + e.v.fin, t: limT(e.v), by: e.f, obs: [e.v.kg > 0 ? `${fmt(e.v.kg, 1)} kg alcohol` : "Sin alcohol", ok ? "aprobada" : "sin aprobar", e.v.obs].filter(Boolean).join(" · ") })); }));
+    limKeys(o).forEach(key => Object.entries(s[key] || {}).forEach(([n, raw]) => { const N = limN(raw); if (!N?.done) return; const e = { v: N.v, f: N.f }, ok = s[key + "ok"]?.[n];
+      (e.v.eqs || []).forEach(eq => ev.push({ eq, k: "lim", op: "Limpieza", o, key, n, e, ok, prod: "", lote: o.lote, ini: e.v.fecha + "T" + e.v.ini, fin: e.v.fecha + "T" + e.v.fin, t: limT(e.v), by: e.f, obs: [e.v.kg > 0 ? `${fmt(e.v.kg, 1)} kg alcohol${e.v.lote ? " lote " + e.v.lote : ""}` : "Sin alcohol", ok ? "aprobada" : "sin aprobar", e.v.obs].filter(Boolean).join(" · ") })); }));
   });
   const ts = x => x.t || new Date(x.ini).getTime();
   ev.forEach(x => x.ts = ts(x)); ev.sort((a, b) => a.ts - b.ts);
@@ -1994,12 +2034,13 @@ function limBlock(o, L, key, opts) {
     if (!N.done) { abierta = n;
       const mins = clockMin(new Date().toISOString()) - clockMin(N.f.at);
       html += `<div class="line"><div class="kv"><div><span class="lbl">Equipo</span><b>${esc(v.eqs.map(eqName).join(", "))}</b></div><div><span class="lbl">Inicio</span><b class="num">${fd(v.fecha)} ${esc(v.ini)}</b></div><div><span class="lbl">En curso</span><b class="num">${fmt(mins, 0)} min</b></div></div>${sigLine(raw.i, "Inicio")}
-        ${puede ? `<div class="row" style="align-items:flex-end"><label class="field" style="flex:0 1 190px"><span class="lbl">Alcohol usado (kg)</span><input id="${id("kg")}" inputmode="decimal" placeholder="0,0"></label>
+        ${puede ? `<div class="row" style="align-items:flex-end"><label class="field" style="flex:0 1 190px"><span class="lbl">Alcohol usado (kg)</span><input id="${id("kg")}" data-keep="1" inputmode="decimal" placeholder="0,0"></label>
+          <label class="field" style="flex:0 1 190px"><span class="lbl">Lote del alcohol</span><input id="${id("lt")}" data-keep="1" placeholder="Lote"></label>
           <label class="field" style="flex:3 1 240px"><span class="lbl">Observación (opcional)</span><input id="${id("obs")}" placeholder="Ej.: limpieza de cañería y bomba"></label>
           <button class="pri" data-act="limfin" data-k="${key}" data-n="${n}">Finalizar limpieza</button></div>
           <p class="note" style="margin:0">La hora de fin se toma al firmar. El alcohol pasa solo a la planilla semanal (Form 302). Si no usaste alcohol, poné 0.</p>` : pend("Limpieza en curso.")}</div>`;
       return; }
-    html += `<div class="line"><div class="kv"><div><span class="lbl">Equipo</span><b>${esc(v.eqs.map(eqName).join(", "))}</b></div><div><span class="lbl">Fecha</span><b>${fd(v.fecha)}</b></div><div><span class="lbl">Horario</span><b class="num">${esc(v.ini)} a ${esc(v.fin)}</b></div><div><span class="lbl">Alcohol (${esc(v.cod || alcCod())})</span><b class="num">${fmt(v.kg || 0, 1)} kg</b></div><div><span class="lbl">Vence</span><b>${fd(addDias(v.fecha, LIM_VENCE_DIAS))}</b></div></div>
+    html += `<div class="line"><div class="kv"><div><span class="lbl">Equipo</span><b>${esc(v.eqs.map(eqName).join(", "))}</b></div><div><span class="lbl">Fecha</span><b>${fd(v.fecha)}</b></div><div><span class="lbl">Horario</span><b class="num">${esc(v.ini)} a ${esc(v.fin)}</b></div><div><span class="lbl">Alcohol (${esc(v.cod || alcCod())})</span><b class="num">${fmt(v.kg || 0, 1)} kg${v.lote ? ` · lote ${esc(v.lote)}` : ""}</b></div><div><span class="lbl">Vence</span><b>${fd(addDias(v.fecha, LIM_VENCE_DIAS))}</b></div></div>
       ${v.obs ? `<p class="note">Obs.: ${esc(v.obs)}</p>` : ""}${raw.f ? sigLine(raw, "Limpió") : sigLine(raw.i, "Inicio") + sigLine(raw.e, "Fin")}
       ${ok ? sigLine(ok, "Aprobó (Supervisor)") : L && can("supervisor") ? `<div class="bar"><span class="note">Falta la aprobación del supervisor.</span><button class="sp" data-act="limok" data-id="${esc(o.id)}" data-k="${key}" data-n="${n}">Aprobar limpieza</button></div>` : `<p class="note">Pendiente de aprobación del supervisor.</p>`}</div>`;
   });
@@ -2034,10 +2075,11 @@ Object.assign(ACT, {
       async () => { const ok = await sign(o, ["sec", key, n, "i"], { eqs }); if (ok && S.limMas) delete S.limMas[o.id + key]; return ok; });
   },
   limfin: d => {
-    const o = cur(), key = d.k, id = x => `lim_${key}_${x}`, kgS = V(id("kg")), kg = kgS === "" ? NaN : num(kgS), obs = V(id("obs"));
+    const o = cur(), key = d.k, id = x => `lim_${key}_${x}`, kgS = V(id("kg")), kg = kgS === "" ? NaN : num(kgS), obs = V(id("obs")), lote = V(id("lt")).toUpperCase();
     if (!(kg >= 0)) { toast("Ingresá los kg de alcohol (0 si no usaste)."); return; }
-    const v = { kg: +kg.toFixed(1), cod: alcCod(), obs };
-    ask("Finalizar limpieza", `<p>Fin: <b>${hmOf(new Date().toISOString())}</b> · ${fmt(v.kg, 1)} kg de alcohol</p>`, () => sign(o, ["sec", key, d.n, "e"], v));
+    if (kg > 0 && !lote) { toast("Ingresá el lote del alcohol que usaste."); return; }
+    const v = { kg: +kg.toFixed(1), cod: alcCod(), lote, obs };
+    ask("Finalizar limpieza", `<p>Fin: <b>${hmOf(new Date().toISOString())}</b> · ${fmt(v.kg, 1)} kg de alcohol${lote ? " · lote " + esc(lote) : ""}</p>`, () => sign(o, ["sec", key, d.n, "e"], v));
   },
 });
 
@@ -2108,13 +2150,13 @@ function bitRows(id, desde, hasta) {
 function lunes(ymd) { const d = new Date(ymd + "T12:00:00"), w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return ymdOf(d.toISOString()); }
 function alcRows(desde, hasta) {
   const out = [];
-  S.list.forEach(o => { if (o.sec?.anu) return; (LIM_KEYS[o.tipo] || []).forEach(key => Object.entries(o.sec?.[key] || {}).forEach(([n, e]) => {
+  S.list.forEach(o => { if (o.sec?.anu) return; limKeys(o).forEach(key => Object.entries(o.sec?.[key] || {}).forEach(([n, e]) => {
     const N = limN(e); if (!N?.done) return; const v = N.v; e = { v, f: N.fe || N.f }; if (!(v.kg > 0) || v.fecha < desde || v.fecha > hasta) return;
     const eqs = (v.eqs || []).map(eqName), ar = o.tipo === "E" ? "Elaboración" : "Envasado" + (planOf(o).linea ? " · " + LINEAS[planOf(o).linea] : "");
-    out.push({ fecha: v.fecha, cod: v.cod || alcCod(), sol: whoW(e.f), uso: "Limpieza de " + eqs.map(x => x.replace(/^./, c => c.toLowerCase())).join(" y "), sector: ar, kg: v.kg, obs: [`Lote ${o.lote}`, `${v.ini}–${v.fin}`, v.obs, o.sec?.[key + "ok"]?.[n] ? "aprobó " + whoW(o.sec[key + "ok"][n].f) : "sin aprobar"].filter(Boolean).join(" · "), o, t: limT(v), ap: o.sec?.[key + "ok"]?.[n] || null, apAct: { id: o.id, k: key, n } });
+    out.push({ fecha: v.fecha, cod: v.cod || alcCod(), lote: v.lote || "", sol: whoW(e.f), uso: "Limpieza de " + eqs.map(x => x.replace(/^./, c => c.toLowerCase())).join(" y "), sector: ar, kg: v.kg, obs: [`Lote ${o.lote}`, `${v.ini}–${v.fin}`, v.obs, o.sec?.[key + "ok"]?.[n] ? "aprobó " + whoW(o.sec[key + "ok"][n].f) : "sin aprobar"].filter(Boolean).join(" · "), o, t: limT(v), ap: o.sec?.[key + "ok"]?.[n] || null, apAct: { id: o.id, k: key, n } });
   })); });
   (S.alcList || []).forEach(a => { const r = a.reg; if (!r?.f) return; const fe = ymdOf(r.f.at); if (fe < desde || fe > hasta) return;
-    out.push({ fecha: fe, cod: r.v.cod || alcCod(), sol: whoW(r.f), uso: r.v.uso, sector: r.v.sector, kg: r.v.kg, obs: [hmOf(r.f.at), r.v.obs, a.ok ? "aprobó " + whoW(a.ok.f) : "sin aprobar"].filter(Boolean).join(" · "), man: a, t: new Date(r.f.at).getTime(), ap: a.ok || null }); });
+    out.push({ fecha: fe, cod: r.v.cod || alcCod(), lote: r.v.lote || "", sol: whoW(r.f), uso: r.v.uso, sector: r.v.sector, kg: r.v.kg, obs: [hmOf(r.f.at), r.v.obs, a.ok ? "aprobó " + whoW(a.ok.f) : "sin aprobar"].filter(Boolean).join(" · "), man: a, t: new Date(r.f.at).getTime(), ap: a.ok || null }); });
   return out.sort((a, b) => a.t - b.t);
 }
 const ALC_USOS = ["Limpieza de máquina de aceites", "Alcohol para sahumerios", "Limpieza de cañería", "Limpieza de filtros", "Limpieza de bomba de central de pesada"];
@@ -2127,20 +2169,22 @@ function alcView() {
     ${S.alcNew && S.write ? `<div class="card hd"><h3>Agregar utilización de alcohol</h3>
       <div class="row" style="align-items:flex-end"><label class="field" style="flex:3 1 260px"><span class="lbl">Uso</span><input id="al_uso" list="dl_aluso" placeholder="Ej.: limpieza de máquina de aceites"><datalist id="dl_aluso">${ALC_USOS.map(u => `<option value="${esc(u)}">`).join("")}</datalist></label>
         <label class="field" style="flex:2 1 220px"><span class="lbl">Sector</span><input id="al_sec" list="dl_alsec" placeholder="Ej.: Fraccionamiento de aceites"><datalist id="dl_alsec">${ALC_SECTORES.map(u => `<option value="${esc(u)}">`).join("")}</datalist></label>
-        <label class="field" style="flex:0 1 170px"><span class="lbl">Cantidad pesada (kg)</span><input id="al_kg" inputmode="decimal" placeholder="0,0"></label></div>
+        <label class="field" style="flex:0 1 170px"><span class="lbl">Cantidad pesada (kg)</span><input id="al_kg" inputmode="decimal" placeholder="0,0"></label>
+        <label class="field" style="flex:0 1 170px"><span class="lbl">Lote del alcohol</span><input id="al_lt" placeholder="Lote"></label></div>
       <div class="row" style="align-items:flex-end"><label class="field" style="flex:3 1 260px"><span class="lbl">Observación (opcional)</span><input id="al_obs" placeholder="Dato útil para la trazabilidad"></label>
         <button class="pri" data-act="alcfirma">Firmar</button></div>
       <p class="note" style="margin:0">La fecha y la hora se toman al firmar. Queda a nombre de quien firma y después la aprueba el supervisor.</p></div>` : ""}
-    ${rows.length ? `<div class="tw card"><table><thead><tr><th>Fecha</th><th>Cod_Alfa</th><th>Solicitó</th><th>Uso</th><th>Sector</th><th class="r">Cantidad pesada (kg)</th><th>Observación</th><th>Autorizó</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td class="num">${fd(r.fecha)}</td><td class="mono">${esc(r.cod)}</td><td>${esc(r.sol)}</td><td>${esc(r.uso)}${r.man ? ` <span class="chip">Manual</span>` : ""}</td><td>${esc(r.sector)}</td><td class="r num">${fmt(r.kg, 1)}</td><td class="note">${esc(r.obs)}</td><td>${apr(r)}</td></tr>`).join("")}
-      <tr><td colspan="5"><b>Total de la semana</b></td><td class="r num"><b>${fmt(tot, 1)}</b></td><td colspan="2"></td></tr></tbody></table></div>` : `<div class="card empty">No hay utilización de alcohol registrada esta semana.</div>`}`;
+    ${rows.length ? `<div class="tw card"><table><thead><tr><th>Fecha</th><th>Cod_Alfa</th><th>Lote</th><th>Solicitó</th><th>Uso</th><th>Sector</th><th class="r">Cantidad pesada (kg)</th><th>Observación</th><th>Autorizó</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="num">${fd(r.fecha)}</td><td class="mono">${esc(r.cod)}</td><td class="mono">${esc(r.lote || "—")}</td><td>${esc(r.sol)}</td><td>${esc(r.uso)}${r.man ? ` <span class="chip">Manual</span>` : ""}</td><td>${esc(r.sector)}</td><td class="r num">${fmt(r.kg, 1)}</td><td class="note">${esc(r.obs)}</td><td>${apr(r)}</td></tr>`).join("")}
+      <tr><td colspan="6"><b>Total de la semana</b></td><td class="r num"><b>${fmt(tot, 1)}</b></td><td colspan="2"></td></tr></tbody></table></div>` : `<div class="card empty">No hay utilización de alcohol registrada esta semana.</div>`}`;
 }
 Object.assign(ACT, {
   alcnew: () => { S.alcNew = !S.alcNew; render(); },
   alcfirma: () => {
-    const uso = V("al_uso"), sector = V("al_sec"), kg = num(V("al_kg")), obs = V("al_obs");
+    const uso = V("al_uso"), sector = V("al_sec"), kg = num(V("al_kg")), obs = V("al_obs"), lote = V("al_lt").toUpperCase();
+    if (!lote) { toast("Ingresá el lote del alcohol."); return; }
     if (!uso) { toast("Indicá para qué se usó el alcohol."); return; } if (!sector) { toast("Indicá el sector."); return; } if (!(kg > 0)) { toast("Ingresá los kg pesados."); return; }
-    const id = "A" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), v = { uso, sector, kg: +kg.toFixed(1), cod: alcCod(), obs };
+    const id = "A" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), v = { uso, sector, kg: +kg.toFixed(1), cod: alcCod(), lote, obs };
     ask("Firmar utilización de alcohol", `<p><b>${esc(uso)}</b> · ${esc(sector)}<br>${fmt(v.kg, 1)} kg · ${fd(today())} ${hmOf(new Date().toISOString())}</p>`,
       async () => { const ok = await sign({ id, col: "alcohol" }, ["reg"], v, { creado: new Date().toISOString(), por: S.uid }); if (ok) S.alcNew = false; return ok; });
   },
@@ -2163,8 +2207,8 @@ Object.assign(ACT, {
   eqbit: d => { S.view.eqt = "bit"; S.view.eqid = d.id; render(); window.scrollTo(0, 0); },
   alcsem: d => { S.view.ad = addDias(S.view.ad || lunes(today()), +d.d); render(); },
   alcxls: () => { const d0 = S.view.ad || lunes(today()), d1 = addDias(d0, 6), r = alcRows(d0, d1);
-    xlsBajar(`P08_Form302_alcohol_${d0}.xlsx`, "PLANILLA SEMANAL DE UTILIZACIÓN DE ALCOHOL", "Form 302", ["FECHA", "COD_ALFA", "SOLICITO", "USO", "SECTOR", "CANTIDAD PESADA", "OBSERVACION"],
-      r.map(x => [fd(x.fecha), x.cod, x.sol, x.uso, x.sector, x.kg, x.obs]), [[`Semana del ${fd(d0)} al ${fd(d1)}`]]); },
+    xlsBajar(`P08_Form302_alcohol_${d0}.xlsx`, "PLANILLA SEMANAL DE UTILIZACIÓN DE ALCOHOL", "Form 302", ["FECHA", "COD_ALFA", "LOTE", "SOLICITO", "USO", "SECTOR", "CANTIDAD PESADA", "OBSERVACION"],
+      r.map(x => [fd(x.fecha), x.cod, x.lote, x.sol, x.uso, x.sector, x.kg, x.obs]), [[`Semana del ${fd(d0)} al ${fd(d1)}`]]); },
   bitxls: () => { const ids = eqLista(), id = S.view.eqid && ids.includes(S.view.eqid) ? S.view.eqid : ids[0]; if (!id) return;
     const d0 = S.view.bd || addDias(today(), -30), d1 = S.view.bh || today(), r = bitRows(id, d0, d1).reverse();
     xlsBajar(`P08_Bitacora_${eqName(id).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]+/g, "_")}_${d0}_${d1}.xlsx`, "BITACORAS EQUIPOS DE PRODUCCION", "Rev.00", ["FECHA", "PRODUCTO", "OPERACIÓN", "FECHA HORA INICIO", "FECHA HORA FIN", "OPERADOR", "OBSERVACIONES"],
@@ -2279,7 +2323,8 @@ async function orderPdf(o) {
       if (!rows.length) cb.push([n, ins, fmt(it.q) + " kg", "—", "—", "—", "—"]);
       rows.forEach(e => cb.push([n, ins, fmt(it.q) + " kg", fmt(e.v.kg, 3), e.v.lote, fdt(e.f.at), who(e.f)])); }); if (a.fin) cf.push([n, a.fin]); });
     if (cb.length) T({ head: [["Control", "Insumo", "Solicitado", "Fraccionado (kg)", "Lote", "Fecha / hora", "Realizó"]], body: cb, columnStyles: { 0: { cellWidth: 13 }, 1: { cellWidth: 50 } } });
-    cf.forEach(([n, f]) => { kv([[`Ajuste ${n} · peso teórico`, fmt(f.v.teo) + " kg"], ["Peso neto", fmt(f.v.neto) + " kg"], ["Rendimiento", f.v.rend != null ? fmt(f.v.rend, 1) + " %" : "—"]]); firmas([[`Ajuste ${n} · realizó`, f]]); });
+    cf.forEach(([n, f]) => { kv([[`Ajuste ${n} · peso teórico`, fmt(f.v.teo) + " kg"], ["Peso neto", fmt(f.v.neto) + " kg"], ["Rendimiento", f.v.rend != null ? fmt(f.v.rend, 1) + " %" : "—"]]); firmas([[`Ajuste ${n} · realizó`, f]]);
+      const g = s.cajrec?.[n]; if (g?.i) { kv([[`Recirculación ajuste ${n} · duración`, durTxt(g)]], 1); firmas([["Inicio", g.i], ["Fin", g.e]]); } });
     const ld = lastDic(o), dicFinal = ld && ld.e.v.res !== "A AJUSTAR";
     sec(6, "Macerado", s.mac?.e || dicFinal ? "Completo" : s.mac?.i ? "En reposo" : "Pendiente");
     if (s.mac?.i) firmas([["Inicio (OK de Calidad)", s.mac.i], [s.mac.e ? "Fin" : "Fin (con dictamen)", s.mac.e || (dicFinal ? ld.e : null)]]);
@@ -2297,7 +2342,8 @@ async function orderPdf(o) {
       rows.forEach(e => ab.push([n, ins, fmt(it.q) + " kg", fmt(e.v.kg, 3), e.v.lote, fdt(e.f.at), who(e.f)])); });
       if (a.fin) ajf.push([n, a.fin]); });
     if (ab.length) T({ head: [["Ajuste", "Insumo", "Solicitado", "Fraccionado (kg)", "Lote", "Fecha / hora", "Realizó"]], body: ab, columnStyles: { 0: { cellWidth: 13 }, 1: { cellWidth: 50 } } });
-    ajf.forEach(([n, f]) => { if (f.v.teo != null) kv([[`Ajuste ${n} · peso teórico`, fmt(f.v.teo) + " kg"], ["Peso neto", fmt(f.v.neto) + " kg"], ["Rendimiento", f.v.rend != null ? fmt(f.v.rend, 1) + " %" : "—"]]); firmas([[`Ajuste ${n} · realizó`, f]]); });
+    ajf.forEach(([n, f]) => { if (f.v.teo != null) kv([[`Ajuste ${n} · peso teórico`, fmt(f.v.teo) + " kg"], ["Peso neto", fmt(f.v.neto) + " kg"], ["Rendimiento", f.v.rend != null ? fmt(f.v.rend, 1) + " %" : "—"]]); firmas([[`Ajuste ${n} · realizó`, f]]);
+      const g = s.ajrec?.[n]; if (g?.i) { kv([[`Recirculación ajuste ${n} · duración`, durTxt(g)]], 1); firmas([["Inicio", g.i], ["Fin", g.e]]); } });
     if (s.vac) firmas([["Tanque vaciado", s.vac]]);
   } else {
     const prodN = s.lle?.e?.v.un != null ? fmt(s.lle.e.v.un, 0) + " un" : "—";
@@ -2375,6 +2421,133 @@ async function orderPdf(o) {
   }
   return doc.output("blob");
 }
+/* ---------- Respaldo en SharePoint (solo versión independiente) ----------
+   Cada orden cerrada se guarda en SharePoint como:
+     PDF de la orden · JSON firmado (con los sellos de cada firma) · PDF de recepción de Presea
+   en <carpeta>/F37|F41/<año>/<mes>/<lote>_<código>/
+   y además un respaldo completo diario en <carpeta>/Respaldos/.
+   Se conecta con Microsoft (MSAL, permiso delegado Sites.ReadWrite.All). No guarda contraseñas ni secretos. */
+const MSAL_URL = "https://cdn.jsdelivr.net/npm/@azure/msal-browser@4.30.0/lib/msal-browser.min.js";
+const SP_SCOPES = ["Sites.ReadWrite.All"];
+const SP = { msal: null, account: null, siteId: null, running: false, log: [], err: null, last: null };
+function spCfg() { return S.spcfg || {}; }
+function spListo() { const c = spCfg(); return !!(c.tenant && c.client && c.site); }
+function spPuede() { return ownerEff() || myRoles().has("supervisor"); }
+async function spMsal() {
+  if (SP.msal) return SP.msal; const c = spCfg();
+  await loadScript(MSAL_URL); if (!window.msal) throw new Error("No se pudo cargar el inicio de sesión de Microsoft.");
+  const app = new msal.PublicClientApplication({ auth: { clientId: c.client, authority: "https://login.microsoftonline.com/" + c.tenant, redirectUri: location.origin + location.pathname }, cache: { cacheLocation: "localStorage" } });
+  await app.initialize(); await app.handleRedirectPromise().catch(() => null);
+  SP.msal = app; SP.account = app.getAllAccounts()[0] || null; return app;
+}
+async function spToken(interactivo) {
+  const app = await spMsal();
+  if (SP.account) { try { return (await app.acquireTokenSilent({ scopes: SP_SCOPES, account: SP.account })).accessToken; } catch (e) { if (!interactivo) throw e; } }
+  if (!interactivo) throw new Error("Sin sesión de Microsoft");
+  const r = await app.loginPopup({ scopes: SP_SCOPES, prompt: "select_account" }); SP.account = r.account; return r.accessToken;
+}
+async function gfetch(path, opt = {}, tok) {
+  const r = await fetch(path.startsWith("http") ? path : "https://graph.microsoft.com/v1.0" + path, { ...opt, headers: { Authorization: "Bearer " + tok, ...(opt.headers || {}) } });
+  if (!r.ok) { let m = ""; try { m = (await r.json()).error?.message || ""; } catch (e) { } const er = new Error(`SharePoint ${r.status}${m ? ": " + m : ""}`); er.status = r.status; throw er; }
+  return r.status === 204 ? null : r.json();
+}
+async function spSite(tok) {
+  if (SP.siteId) return SP.siteId; const u = new URL(spCfg().site);
+  const s = await gfetch(`/sites/${u.hostname}:${u.pathname.replace(/\/$/, "") || "/"}`, {}, tok); SP.siteId = s.id; return s.id;
+}
+const spEnc = p => p.split("/").map(encodeURIComponent).join("/");
+async function spUpload(tok, path, blob, type) {
+  const site = await spSite(tok), base = `/sites/${site}/drive/root:/${spEnc(path)}:`;
+  if (blob.size < 3.5e6) return gfetch(base + "/content", { method: "PUT", headers: { "Content-Type": type || "application/octet-stream" }, body: blob }, tok);
+  const ses = await gfetch(base + "/createUploadSession", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "replace" } }) }, tok);
+  const CH = 5 * 327680; let res = null;
+  for (let i = 0; i < blob.size; i += CH) { const part = blob.slice(i, Math.min(i + CH, blob.size));
+    const r = await fetch(ses.uploadUrl, { method: "PUT", headers: { "Content-Range": `bytes ${i}-${i + part.size - 1}/${blob.size}` }, body: part });
+    if (!r.ok && r.status !== 202) throw new Error("SharePoint: falló la subida de " + path); if (r.status === 200 || r.status === 201) res = await r.json(); }
+  return res;
+}
+async function spExiste(tok, path) { try { await gfetch(`/sites/${await spSite(tok)}/drive/root:/${spEnc(path)}`, {}, tok); return true; } catch (e) { if (e.status === 404) return false; throw e; } }
+async function sha256(blob) { const b = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join(""); }
+// huella del contenido de la orden sin el propio registro de archivo
+function ordHuella(o) { const { mod, ...rest } = o; const sec = { ...(rest.sec || {}) }; delete sec.arch; return canon({ ...rest, sec }); }
+function lastArch(o) { const a = o.sec?.arch || {}; const ks = Object.keys(a).map(Number).sort((x, y) => x - y); return ks.length ? a[ks[ks.length - 1]] : null; }
+async function spPendientes() {
+  const out = [];
+  for (const o of S.list) { if (!estado(o)[2]) continue; const la = lastArch(o); const h = await hash(ordHuella(o)); if (!la || la.v.huella !== h) out.push([o, h]); }
+  return out;
+}
+// sellos de las firmas (para que el JSON sirva de prueba aunque Supabase ya no exista)
+async function sellos(o) {
+  const m = {};
+  for (const { p, e } of entries(o)) { const f = e.f, key = `${f.by}|${f.at.slice(0, 7)}`;
+    try { const d = await (S.fcache[key] || (S.fcache[key] = S.db.doc(`firmas/${f.by}/m/${f.at.slice(0, 7)}`).get())); m[f.id] = { p, ...(d.data()?.e?.[f.id] || {}), firmante: who(f) }; } catch (x) { } }
+  return m;
+}
+async function spArchivarOrden(tok, o, huella) {
+  const c = spCfg(), h = o.em.v, f = new Date((h.fecha || today()) + "T12:00:00"), Y = f.getFullYear(), Mo = String(f.getMonth() + 1).padStart(2, "0");
+  const form = o.tipo === "E" ? "F37" : "F41", cod = (o.tipo === "E" ? o.cod : h.fin || o.cod || "").replace(/[^A-Z0-9]/gi, "");
+  const dir = `${c.carpeta || "Registros Hidroalcohólicos"}/${form}/${Y}/${Mo}/${o.lote}_${cod}${o.sec?.anu ? "_ANULADA" : ""}`, files = [];
+  await verifyOrder(o);
+  const pdf = await orderPdf(o); const rp = await spUpload(tok, `${dir}/${form}_${o.lote}_${cod}.pdf`, pdf, "application/pdf"); files.push({ n: rp.name, size: pdf.size, sha: await sha256(pdf) });
+  const js = new Blob([JSON.stringify({ app: "Registros Hidroalcohólicos", formulario: form, archivado: new Date().toISOString(), por: who({ by: S.uid }), orden: o, sellos: await sellos(o), nombres: Object.fromEntries(entries(o).map(({ e }) => [e.f.by, who(e.f)])) }, null, 1)], { type: "application/json" });
+  const rj = await spUpload(tok, `${dir}/${form}_${o.lote}_${cod}.json`, js, "application/json"); files.push({ n: rj.name, size: js.size, sha: await sha256(js) });
+  const pv = o.sec?.presea?.v; let presea = null;
+  if (pv?.asset && !lastArch(o)?.v.presea) { try { const b = await S.assets.fetch(pv.asset); const blob = new Blob([b], { type: "application/pdf" }); const rr = await spUpload(tok, `${dir}/Presea_${(pv.name || "recepcion.pdf").replace(/[\\/:*?"<>|]/g, "_")}`, blob, "application/pdf"); presea = { n: rr.name, url: rr.webUrl, size: blob.size, sha: await sha256(blob) }; files.push(presea); } catch (e) { if (!lastArch(o)) throw e; } }
+  else if (lastArch(o)?.v.presea) presea = lastArch(o).v.presea;
+  const folder = await gfetch(`/sites/${await spSite(tok)}/drive/root:/${spEnc(dir)}`, {}, tok);
+  const n = String((Math.max(0, ...Object.keys(o.sec?.arch || {}).map(Number)) || 0) + 1);
+  S.quietSign = true; let okS; try { okS = await sign(o, ["sec", "arch", n], { carpeta: dir, url: folder.webUrl, files, presea, huella }); } finally { S.quietSign = false; }
+  if (!okS) throw new Error("no se pudo registrar el archivo en la orden (se reintenta en la próxima corrida)");
+  // liberar espacio en Supabase: el PDF de Presea queda solo en SharePoint
+  if (c.liberar && pv?.asset && presea && presea.sha === pv.sha) { try { await sb.storage.from("presea").remove([pv.asset]); } catch (e) { } }
+}
+async function spRespaldoDiario(tok) {
+  const c = spCfg(), path = `${c.carpeta || "Registros Hidroalcohólicos"}/Respaldos/${today().slice(0, 7)}/respaldo_${today()}.json`;
+  if (await spExiste(tok, path)) return;
+  const data = { app: "Registros Hidroalcohólicos", exportado: new Date().toISOString(), por: who({ by: S.uid }), ordenes: S.list, alcohol: S.alcList || [], roles: S.roles, nombres: S.names, tanques: S.tqcfg || {}, equipos: S.eqcfg || null, catalogo: S.cat || null };
+  await spUpload(tok, path, new Blob([JSON.stringify(data)], { type: "application/json" }), "application/json");
+}
+async function spCorrer(interactivo) {
+  if (SP.running || !spListo() || !spPuede()) return; SP.running = true; SP.err = null; if (interactivo) render();
+  try {
+    const tok = await spToken(interactivo);
+    const pend = await spPendientes(); let ok = 0;
+    for (const [o, h] of pend) { try { await spArchivarOrden(tok, o, h); ok++; } catch (e) { SP.err = `Orden ${o.lote}: ${e.message || e}`; break; } }
+    await spRespaldoDiario(tok);
+    SP.last = { at: new Date().toISOString(), ok, pend: pend.length };
+    if (interactivo) toast(ok ? `${ok} orden${ok > 1 ? "es" : ""} guardada${ok > 1 ? "s" : ""} en SharePoint.` : "Todo al día en SharePoint.");
+  } catch (e) { if (interactivo || !/Sin sesión/.test(e.message)) SP.err = e.message || String(e); }
+  finally { SP.running = false; render(); }
+}
+// automático: cada 15 minutos si quien está usando la app es supervisor y ya conectó su cuenta de Microsoft
+setInterval(() => { if (S.uid && spListo() && spPuede() && SP.account) spCorrer(false); }, 15 * 6e4);
+function spAuto() { if (spListo() && spPuede()) spMsal().then(() => { if (SP.account) spCorrer(false); render(); }).catch(() => { }); }
+
+function spCard() {
+  if (!spPuede()) return "";
+  const c = S.spd || (S.spd = { ...spCfg() }), cerr = S.list.filter(o => estado(o)[2]), arch = cerr.filter(o => lastArch(o)).length;
+  const L = (id, lbl, ph, k) => `<label class="field" style="flex:1 1 240px"><span class="lbl">${lbl}</span><input id="${id}" value="${esc(c[k] || "")}" placeholder="${ph}" data-spd="${k}" data-fixed="1" ${ownerEff() ? "" : "disabled"}></label>`;
+  return `<div class="card hd"><h3>Respaldo en SharePoint</h3>
+    <p class="note" style="margin:0">Cada orden cerrada se guarda en SharePoint con su PDF, el registro firmado (JSON con los sellos de cada firma) y la recepción de Presea, ordenadas por formulario, año y mes. También se guarda un respaldo completo por día. Si la orden cambia después (por ejemplo, el tanque se vacía), se vuelve a guardar.</p>
+    <div class="row">${L("sp_site", "Sitio de SharePoint", "https://patagoniacandles.sharepoint.com/sites/Calidad", "site")}${L("sp_carpeta", "Carpeta", "Registros Hidroalcohólicos", "carpeta")}</div>
+    <div class="row">${L("sp_tenant", "Id. de inquilino (Tenant ID)", "xxxxxxxx-xxxx-…", "tenant")}${L("sp_client", "Id. de aplicación (Client ID)", "xxxxxxxx-xxxx-…", "client")}</div>
+    <label class="check" style="border:0;justify-content:flex-start;gap:10px"><input type="checkbox" id="sp_lib" ${c.liberar ? "checked" : ""} ${ownerEff() ? "" : "disabled"} data-spd="liberar" style="width:22px;min-height:22px"><span>Liberar espacio: después de guardar el PDF de Presea en SharePoint (y verificar su huella), borrarlo de Supabase.</span></label>
+    ${ownerEff() ? `<div class="bar"><button class="sm" data-act="spsave">Guardar configuración</button></div>` : ""}
+    ${spListo() ? `<div class="kv"><div><span class="lbl">Órdenes cerradas</span><b class="num">${cerr.length}</b></div><div><span class="lbl">Guardadas en SharePoint</span><b class="num">${arch}</b></div><div><span class="lbl">Cuenta de Microsoft</span><b>${SP.account ? esc(SP.account.username) : "Sin conectar"}</b></div><div><span class="lbl">Última corrida</span><b>${SP.last ? fdt(SP.last.at) : "—"}</b></div></div>
+      ${SP.err ? `<div class="banner bad">${esc(SP.err)}</div>` : ""}
+      <div class="bar"><button class="pri" data-act="sprun" ${SP.running ? "disabled" : ""}>${SP.running ? "Guardando…" : SP.account ? "Guardar pendientes ahora" : "Conectar con Microsoft y guardar"}</button>${SP.account ? `<button class="sm ghost" data-act="spout">Desconectar cuenta</button>` : ""}</div>
+      <p class="note" style="margin:0">Con la cuenta conectada, la app guarda sola cada 15 minutos mientras un supervisor la tenga abierta.</p>` : `<p class="note">Completá los datos que te da Sistemas para activarlo.</p>`}
+  </div>`;
+}
+Object.assign(ACT, {
+  spsave: async () => { const d = S.spd || {}; const v = { site: (d.site || "").trim().replace(/\/$/, ""), carpeta: (d.carpeta || "").trim() || "Registros Hidroalcohólicos", tenant: (d.tenant || "").trim(), client: (d.client || "").trim(), liberar: !!d.liberar };
+    if (v.site && !/^https:\/\/[^/]+\.sharepoint\.com\//i.test(v.site + "/")) { toast("El sitio tiene que ser una dirección de SharePoint (https://…sharepoint.com/sites/…)."); return; }
+    try { await S.db.doc("cfg/sharepoint").set(v); SP.msal = null; SP.siteId = null; S.spd = null; toast("Configuración guardada."); } catch (e) { toast("No se pudo guardar."); } render(); },
+  sprun: () => spCorrer(true),
+  spout: async () => { try { const app = await spMsal(); if (SP.account) await app.clearCache({ account: SP.account }); } catch (e) { } SP.account = null; render(); },
+});
+document.addEventListener("input", e => { const b = e.target; if (b.dataset?.spd == null) return; S.spd = S.spd || { ...spCfg() }; S.spd[b.dataset.spd] = b.type === "checkbox" ? b.checked : b.value; });
+document.addEventListener("change", e => { const b = e.target; if (b.dataset?.spd == null) return; S.spd = S.spd || { ...spCfg() }; S.spd[b.dataset.spd] = b.type === "checkbox" ? b.checked : b.value; });
 /* ---------- versión independiente: Supabase (usuario + contraseña) ---------- */
 // Supabase pide un mail para cada cuenta. Las personas solo usan "usuario": la app arma internamente
 // un identificador hidro.<usuario>@patagoniacandles.com (no se envía ningún mail a esa dirección).
@@ -2531,8 +2704,9 @@ Object.assign(ACT, {
     } catch (e) { toast(/already|registered|exists/i.test(e.message) ? "Ese usuario ya existe." : /password/i.test(e.message) ? "La contraseña no cumple los requisitos de Supabase (probá con 8+ caracteres, letras y números)." : "No se pudo dar de alta: " + e.message); }
     S.busy = false; render();
   },
-  prview: async d => { const v = S.orders[d.id].sec.presea.v; const w = window.open("", "_blank");
-    try { const b = await S.assets.fetch(v.asset); const u = URL.createObjectURL(new Blob([b], { type: "application/pdf" })); if (w) w.location = u; else location.href = u; } catch (e) { if (w) w.close(); toast("No se pudo abrir el PDF."); } },
+  prview: async d => { const o = S.orders[d.id], v = o.sec.presea.v; const w = window.open("", "_blank");
+    try { const b = await S.assets.fetch(v.asset); const u = URL.createObjectURL(new Blob([b], { type: "application/pdf" })); if (w) w.location = u; else location.href = u; }
+    catch (e) { const sp = spPreseaUrl(o); if (sp) { if (w) w.location = sp; else location.href = sp; return; } if (w) w.close(); toast("No se pudo abrir el PDF."); } },
 });
 
 /* ---------- inicio ---------- */
@@ -2543,7 +2717,9 @@ async function saStart() {
   const { data: { session } } = await sb.auth.getSession();
   if (session) await saEntrar(); else saLoginView();
 }
-saStart();
+// ventana emergente del inicio de sesión de Microsoft: no arrancar la app adentro
+if (window.opener && /[?#&](code|error)=/.test(location.hash + location.search)) document.body.innerHTML = '<p style="font-family:sans-serif;padding:24px">Conectando con Microsoft…</p>';
+else saStart();
 
 </script>
 </body>
