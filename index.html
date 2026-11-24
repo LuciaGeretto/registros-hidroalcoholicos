@@ -597,7 +597,7 @@ function usersView() {
   const ids = Object.keys(S.users); ids.forEach(want);
   return `<div class="card hd"><h3>Ver la app como otro rol</h3><p class="note" style="margin:0">Para ver cómo le aparece la app a cada persona. En vista previa podés navegar y tocar botones, pero no se firma ni se guarda nada.</p>
     <div class="bar">${Object.entries(ROLES).map(([k, v]) => `<button class="sm" data-act="prev" data-r="${k}">${v}</button>`).join("")}</div></div>
-  ${window.STANDALONE ? adminSA() : `<div class="card hd"><h3>Cómo se suma una persona</h3><ul class="instr" style="font-size:14px"><li><b>Sin cuenta de Claude</b> (operarios): dala de alta abajo en "Usuarios de planta" con usuario y PIN. Ingresa en la tablet de planta.</li><li><b>Con cuenta de Claude</b>: en <b>Compartir</b> (arriba a la derecha) agregala como <b>Colaborador</b>; al abrir la app aparece en la lista de abajo y le marcás los roles.</li></ul></div>`}
+  ${window.STANDALONE ? adminSA() + borrarCard() : `<div class="card hd"><h3>Cómo se suma una persona</h3><ul class="instr" style="font-size:14px"><li><b>Sin cuenta de Claude</b> (operarios): dala de alta abajo en "Usuarios de planta" con usuario y PIN. Ingresa en la tablet de planta.</li><li><b>Con cuenta de Claude</b>: en <b>Compartir</b> (arriba a la derecha) agregala como <b>Colaborador</b>; al abrir la app aparece en la lista de abajo y le marcás los roles.</li></ul></div>`}
   <div class="card hd"><h3>Respaldo de datos</h3><p class="note" style="margin:0">Descarga todas las órdenes, roles, tanques y datos maestros en un archivo JSON para guardar en SharePoint. Los PDF de cada orden se descargan desde la orden.</p>
     <div class="bar">${S.dl ? `<button class="sm" data-act="backup">Descargar respaldo completo</button><button class="sm ghost" data-act="csv">Exportar CSV de órdenes</button>` : ""}</div></div>
   ${plantaAdmin()}
@@ -1972,6 +1972,11 @@ function limChip(m) { const l = Object.values(m || {}).map(limN).filter(Boolean)
 const limT = v => new Date(`${v.fecha}T${v.fin || v.ini || "00:00"}`).getTime();
 function prodE(o) { return (o.em.v.det || o.cod || "").replace(/^ZZ GRANEL\s*/i, ""); }
 function prodV(o) { const h = o.em.v; return `${h.fin || o.cod || ""}${h.det ? " · " + h.det : ""}`; }
+// aroma del granel de una orden (en envasado, el del granel que se envasó)
+function aromaOrden(o) { if (!o) return ""; if (o.tipo === "E") return aromaDe(PROP[o.cod] || { d: o.em.v.det || "", c: o.cod || "" });
+  const e = typeof granelDe === "function" ? granelDe(o) : null; if (e) return aromaOrden(e); const g = o.em.v.gcod; return g ? aromaDe(PROP[g] || { d: o.em.v.gdesc || "", c: g }) : ""; }
+// aroma que tenía el equipo cuando se limpió: el del último uso que empezó antes de la limpieza
+function aromaPrevio(eq, startTs) { const ev = eqEventos(); let a = ""; for (const x of ev) { if (x.eq !== eq || x.k !== "uso") continue; if (new Date(x.ini).getTime() < startTs + 6e4) a = x.aroma; } return a; }
 function limKeys(o) { return Object.keys(o.sec || {}).filter(k => /^lim/.test(k) && !/ok$/.test(k)); }
 function eqEventos() {
   if (S._ev && S._ev.l === S.list && S._ev.c === S.eqcfg && S._ev.t === S.tqcfg) return S._ev.v;
@@ -1996,6 +2001,8 @@ function eqEventos() {
   });
   const ts = x => x.t || new Date(x.ini).getTime();
   ev.forEach(x => x.ts = ts(x)); ev.sort((a, b) => a.ts - b.ts);
+  ev.forEach(x => { if (x.k === "uso") x.aroma = aromaOrden(x.o); });
+  ev.forEach(x => { if (x.k !== "lim") return; const st = new Date(`${x.e.v.fecha}T${x.e.v.ini || "00:00"}`).getTime(); let a = ""; for (const u of ev) { if (u.eq === x.eq && u.k === "uso" && new Date(u.ini).getTime() < st + 6e4) a = u.aroma; } x.aroma = a; });
   S._ev = { l: S.list, c: S.eqcfg, t: S.tqcfg, v: ev }; return ev;
 }
 // estado para el Form 40
@@ -2135,15 +2142,15 @@ function bitView() {
       <label class="field" style="flex:0 1 170px"><span class="lbl">Desde</span><input id="bit_d" type="date" value="${desde}" data-bit="bd"></label>
       <label class="field" style="flex:0 1 170px"><span class="lbl">Hasta</span><input id="bit_h" type="date" value="${hasta}" data-bit="bh"></label>
       ${sel && S.dl ? `<button class="sm" data-act="bitxls">Descargar Excel</button>` : ""}</div>
-    ${!sel ? `<div class="card empty">No hay equipos para mostrar.</div>` : rows.length ? `<div class="tw card"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Operación</th><th>Inicio</th><th>Fin</th><th>Operador</th><th>Observaciones</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td class="num">${fd(r.fecha)}</td><td>${r.o && r.prod ? `${esc(r.prod)}<div class="note">Lote <button class="lnk mono" data-act="open" data-id="${esc(r.o.id)}">${esc(r.lote)}</button></div>` : r.o ? `<span class="note">Lote <button class="lnk mono" data-act="open" data-id="${esc(r.o.id)}">${esc(r.lote)}</button></span>` : "—"}</td><td><b>${esc(r.op)}</b></td><td class="num">${esc(r.ini)}</td><td class="num">${r.fin ? esc(r.fin) : `<span class="chip ac">En curso</span>`}</td><td>${esc(r.quien)}</td><td class="note">${esc(r.obs)}</td></tr>`).join("")}
+    ${!sel ? `<div class="card empty">No hay equipos para mostrar.</div>` : rows.length ? `<div class="tw card"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Aroma</th><th>Operación</th><th>Inicio</th><th>Fin</th><th>Operador</th><th>Observaciones</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="num">${fd(r.fecha)}</td><td>${r.o && r.prod ? `${esc(r.prod)}<div class="note">Lote <button class="lnk mono" data-act="open" data-id="${esc(r.o.id)}">${esc(r.lote)}</button></div>` : r.o ? `<span class="note">Lote <button class="lnk mono" data-act="open" data-id="${esc(r.o.id)}">${esc(r.lote)}</button></span>` : "—"}</td><td>${esc(r.aroma || "—")}</td><td><b>${esc(r.op)}</b></td><td class="num">${esc(r.ini)}</td><td class="num">${r.fin ? esc(r.fin) : `<span class="chip ac">En curso</span>`}</td><td>${esc(r.quien)}</td><td class="note">${esc(r.obs)}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="card empty">Sin movimientos entre ${fd(desde)} y ${fd(hasta)}.</div>`}`;
 }
 function bitRows(id, desde, hasta) {
   return eqEventos().filter(x => x.eq === id).map(x => {
     const lim = x.k === "lim", f = lim ? x.e.v.fecha : ymdOf(x.ini);
     const fi = lim ? x.e.v.fin : x.fin ? (ymdOf(x.fin) !== f ? fd(ymdOf(x.fin)) + " " : "") + hmOf(x.fin) : "";
-    return { fecha: f, prod: x.prod, lote: x.lote, o: x.o, op: x.op, ini: lim ? x.e.v.ini : hmOf(x.ini), fin: fi, quien: whoW(x.by) + (x.finBy && x.finBy.by !== x.by.by ? " / " + whoW(x.finBy) : ""), obs: x.obs, ts: x.ts };
+    return { fecha: f, prod: x.prod, aroma: x.aroma || "", lote: x.lote, o: x.o, op: x.op, ini: lim ? x.e.v.ini : hmOf(x.ini), fin: fi, quien: whoW(x.by) + (x.finBy && x.finBy.by !== x.by.by ? " / " + whoW(x.finBy) : ""), obs: x.obs, ts: x.ts };
   }).filter(r => r.fecha >= desde && r.fecha <= hasta).sort((a, b) => b.ts - a.ts);
 }
 /* ---------- planilla semanal de alcohol (Form 302) ---------- */
@@ -2153,7 +2160,8 @@ function alcRows(desde, hasta) {
   S.list.forEach(o => { if (o.sec?.anu) return; limKeys(o).forEach(key => Object.entries(o.sec?.[key] || {}).forEach(([n, e]) => {
     const N = limN(e); if (!N?.done) return; const v = N.v; e = { v, f: N.fe || N.f }; if (!(v.kg > 0) || v.fecha < desde || v.fecha > hasta) return;
     const eqs = (v.eqs || []).map(eqName), ar = o.tipo === "E" ? "Elaboración" : "Envasado" + (planOf(o).linea ? " · " + LINEAS[planOf(o).linea] : "");
-    out.push({ fecha: v.fecha, cod: v.cod || alcCod(), lote: v.lote || "", sol: whoW(e.f), uso: "Limpieza de " + eqs.map(x => x.replace(/^./, c => c.toLowerCase())).join(" y "), sector: ar, kg: v.kg, obs: [`Lote ${o.lote}`, `${v.ini}–${v.fin}`, v.obs, o.sec?.[key + "ok"]?.[n] ? "aprobó " + whoW(o.sec[key + "ok"][n].f) : "sin aprobar"].filter(Boolean).join(" · "), o, t: limT(v), ap: o.sec?.[key + "ok"]?.[n] || null, apAct: { id: o.id, k: key, n } });
+    const st0 = new Date(`${v.fecha}T${v.ini || "00:00"}`).getTime(), arom = [...new Set((v.eqs || []).map(q => aromaPrevio(q, st0)).filter(Boolean))].join(" / ");
+    out.push({ fecha: v.fecha, cod: v.cod || alcCod(), lote: v.lote || "", aroma: arom, sol: whoW(e.f), uso: "Limpieza de " + eqs.map(x => x.replace(/^./, c => c.toLowerCase())).join(" y "), sector: ar, kg: v.kg, obs: [`Lote ${o.lote}`, `${v.ini}–${v.fin}`, v.obs, o.sec?.[key + "ok"]?.[n] ? "aprobó " + whoW(o.sec[key + "ok"][n].f) : "sin aprobar"].filter(Boolean).join(" · "), o, t: limT(v), ap: o.sec?.[key + "ok"]?.[n] || null, apAct: { id: o.id, k: key, n } });
   })); });
   (S.alcList || []).forEach(a => { const r = a.reg; if (!r?.f) return; const fe = ymdOf(r.f.at); if (fe < desde || fe > hasta) return;
     out.push({ fecha: fe, cod: r.v.cod || alcCod(), lote: r.v.lote || "", sol: whoW(r.f), uso: r.v.uso, sector: r.v.sector, kg: r.v.kg, obs: [hmOf(r.f.at), r.v.obs, a.ok ? "aprobó " + whoW(a.ok.f) : "sin aprobar"].filter(Boolean).join(" · "), man: a, t: new Date(r.f.at).getTime(), ap: a.ok || null }); });
@@ -2174,9 +2182,9 @@ function alcView() {
       <div class="row" style="align-items:flex-end"><label class="field" style="flex:3 1 260px"><span class="lbl">Observación (opcional)</span><input id="al_obs" placeholder="Dato útil para la trazabilidad"></label>
         <button class="pri" data-act="alcfirma">Firmar</button></div>
       <p class="note" style="margin:0">La fecha y la hora se toman al firmar. Queda a nombre de quien firma y después la aprueba el supervisor.</p></div>` : ""}
-    ${rows.length ? `<div class="tw card"><table><thead><tr><th>Fecha</th><th>Cod_Alfa</th><th>Lote</th><th>Solicitó</th><th>Uso</th><th>Sector</th><th class="r">Cantidad pesada (kg)</th><th>Observación</th><th>Autorizó</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td class="num">${fd(r.fecha)}</td><td class="mono">${esc(r.cod)}</td><td class="mono">${esc(r.lote || "—")}</td><td>${esc(r.sol)}</td><td>${esc(r.uso)}${r.man ? ` <span class="chip">Manual</span>` : ""}</td><td>${esc(r.sector)}</td><td class="r num">${fmt(r.kg, 1)}</td><td class="note">${esc(r.obs)}</td><td>${apr(r)}</td></tr>`).join("")}
-      <tr><td colspan="6"><b>Total de la semana</b></td><td class="r num"><b>${fmt(tot, 1)}</b></td><td colspan="2"></td></tr></tbody></table></div>` : `<div class="card empty">No hay utilización de alcohol registrada esta semana.</div>`}`;
+    ${rows.length ? `<div class="tw card"><table><thead><tr><th>Fecha</th><th>Cod_Alfa</th><th>Lote</th><th>Solicitó</th><th>Uso</th><th>Aroma</th><th>Sector</th><th class="r">Cantidad pesada (kg)</th><th>Observación</th><th>Autorizó</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td class="num">${fd(r.fecha)}</td><td class="mono">${esc(r.cod)}</td><td class="mono">${esc(r.lote || "—")}</td><td>${esc(r.sol)}</td><td>${esc(r.uso)}${r.man ? ` <span class="chip">Manual</span>` : ""}</td><td>${esc(r.aroma || "—")}</td><td>${esc(r.sector)}</td><td class="r num">${fmt(r.kg, 1)}</td><td class="note">${esc(r.obs)}</td><td>${apr(r)}</td></tr>`).join("")}
+      <tr><td colspan="7"><b>Total de la semana</b></td><td class="r num"><b>${fmt(tot, 1)}</b></td><td colspan="2"></td></tr></tbody></table></div>` : `<div class="card empty">No hay utilización de alcohol registrada esta semana.</div>`}`;
 }
 Object.assign(ACT, {
   alcnew: () => { S.alcNew = !S.alcNew; render(); },
@@ -2207,12 +2215,12 @@ Object.assign(ACT, {
   eqbit: d => { S.view.eqt = "bit"; S.view.eqid = d.id; render(); window.scrollTo(0, 0); },
   alcsem: d => { S.view.ad = addDias(S.view.ad || lunes(today()), +d.d); render(); },
   alcxls: () => { const d0 = S.view.ad || lunes(today()), d1 = addDias(d0, 6), r = alcRows(d0, d1);
-    xlsBajar(`P08_Form302_alcohol_${d0}.xlsx`, "PLANILLA SEMANAL DE UTILIZACIÓN DE ALCOHOL", "Form 302", ["FECHA", "COD_ALFA", "LOTE", "SOLICITO", "USO", "SECTOR", "CANTIDAD PESADA", "OBSERVACION"],
-      r.map(x => [fd(x.fecha), x.cod, x.lote, x.sol, x.uso, x.sector, x.kg, x.obs]), [[`Semana del ${fd(d0)} al ${fd(d1)}`]]); },
+    xlsBajar(`P08_Form302_alcohol_${d0}.xlsx`, "PLANILLA SEMANAL DE UTILIZACIÓN DE ALCOHOL", "Form 302", ["FECHA", "COD_ALFA", "LOTE", "SOLICITO", "USO", "AROMA", "SECTOR", "CANTIDAD PESADA", "OBSERVACION"],
+      r.map(x => [fd(x.fecha), x.cod, x.lote, x.sol, x.uso, x.aroma || "", x.sector, x.kg, x.obs]), [[`Semana del ${fd(d0)} al ${fd(d1)}`]]); },
   bitxls: () => { const ids = eqLista(), id = S.view.eqid && ids.includes(S.view.eqid) ? S.view.eqid : ids[0]; if (!id) return;
     const d0 = S.view.bd || addDias(today(), -30), d1 = S.view.bh || today(), r = bitRows(id, d0, d1).reverse();
-    xlsBajar(`P08_Bitacora_${eqName(id).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]+/g, "_")}_${d0}_${d1}.xlsx`, "BITACORAS EQUIPOS DE PRODUCCION", "Rev.00", ["FECHA", "PRODUCTO", "OPERACIÓN", "FECHA HORA INICIO", "FECHA HORA FIN", "OPERADOR", "OBSERVACIONES"],
-      r.map(x => [fd(x.fecha), x.prod ? `${x.prod} · lote ${x.lote}` : x.lote ? `lote ${x.lote}` : "", x.op, `${fd(x.fecha)} ${x.ini}`, x.fin ? (x.fin.includes("/") ? x.fin : `${fd(x.fecha)} ${x.fin}`) : "en curso", x.quien, x.obs]), [[`EQUIPO: ${eqName(id).toUpperCase()}`], ["REGISTRO DE UTILIZACION DE EQUIPOS"]]); },
+    xlsBajar(`P08_Bitacora_${eqName(id).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9]+/g, "_")}_${d0}_${d1}.xlsx`, "BITACORAS EQUIPOS DE PRODUCCION", "Rev.00", ["FECHA", "PRODUCTO", "AROMA", "OPERACIÓN", "FECHA HORA INICIO", "FECHA HORA FIN", "OPERADOR", "OBSERVACIONES"],
+      r.map(x => [fd(x.fecha), x.prod ? `${x.prod} · lote ${x.lote}` : x.lote ? `lote ${x.lote}` : "", x.aroma || "", x.op, `${fd(x.fecha)} ${x.ini}`, x.fin ? (x.fin.includes("/") ? x.fin : `${fd(x.fecha)} ${x.fin}`) : "en curso", x.quien, x.obs]), [[`EQUIPO: ${eqName(id).toUpperCase()}`], ["REGISTRO DE UTILIZACION DE EQUIPOS"]]); },
 });
 document.addEventListener("change", e => { const b = e.target; if (!b.dataset?.bit) return; S.view[b.dataset.bit] = b.value; render(); });
 
@@ -2424,10 +2432,11 @@ async function orderPdf(o) {
 /* ---------- Respaldo en SharePoint (solo versión independiente) ----------
    Cada orden cerrada se guarda en SharePoint como:
      PDF de la orden · JSON firmado (con los sellos de cada firma) · PDF de recepción de Presea
-   en <carpeta>/F37|F41/<año>/<mes>/<lote>_<código>/
+   en <carpeta>/F37|F41/<año>/<mes>/<lote>_<código>/ (por defecto la carpeta es Producción/Hidroalcohólicos/Procedimientos y Formularios/Formularios)
    y además un respaldo completo diario en <carpeta>/Respaldos/.
    Se conecta con Microsoft (MSAL, permiso delegado Sites.ReadWrite.All). No guarda contraseñas ni secretos. */
 const MSAL_URL = "https://cdn.jsdelivr.net/npm/@azure/msal-browser@4.30.0/lib/msal-browser.min.js";
+const SP_CARPETA = "Producción/Hidroalcohólicos/Procedimientos y Formularios/Formularios";
 const SP_SCOPES = ["Sites.ReadWrite.All"];
 const SP = { msal: null, account: null, siteId: null, running: false, log: [], err: null, last: null };
 function spCfg() { return S.spcfg || {}; }
@@ -2486,7 +2495,7 @@ async function sellos(o) {
 async function spArchivarOrden(tok, o, huella) {
   const c = spCfg(), h = o.em.v, f = new Date((h.fecha || today()) + "T12:00:00"), Y = f.getFullYear(), Mo = String(f.getMonth() + 1).padStart(2, "0");
   const form = o.tipo === "E" ? "F37" : "F41", cod = (o.tipo === "E" ? o.cod : h.fin || o.cod || "").replace(/[^A-Z0-9]/gi, "");
-  const dir = `${c.carpeta || "Registros Hidroalcohólicos"}/${form}/${Y}/${Mo}/${o.lote}_${cod}${o.sec?.anu ? "_ANULADA" : ""}`, files = [];
+  const dir = `${c.carpeta || SP_CARPETA}/${form}/${Y}/${Mo}/${o.lote}_${cod}${o.sec?.anu ? "_ANULADA" : ""}`, files = [];
   await verifyOrder(o);
   const pdf = await orderPdf(o); const rp = await spUpload(tok, `${dir}/${form}_${o.lote}_${cod}.pdf`, pdf, "application/pdf"); files.push({ n: rp.name, size: pdf.size, sha: await sha256(pdf) });
   const js = new Blob([JSON.stringify({ app: "Registros Hidroalcohólicos", formulario: form, archivado: new Date().toISOString(), por: who({ by: S.uid }), orden: o, sellos: await sellos(o), nombres: Object.fromEntries(entries(o).map(({ e }) => [e.f.by, who(e.f)])) }, null, 1)], { type: "application/json" });
@@ -2502,7 +2511,7 @@ async function spArchivarOrden(tok, o, huella) {
   if (c.liberar && pv?.asset && presea && presea.sha === pv.sha) { try { await sb.storage.from("presea").remove([pv.asset]); } catch (e) { } }
 }
 async function spRespaldoDiario(tok) {
-  const c = spCfg(), path = `${c.carpeta || "Registros Hidroalcohólicos"}/Respaldos/${today().slice(0, 7)}/respaldo_${today()}.json`;
+  const c = spCfg(), path = `${c.carpeta || SP_CARPETA}/Respaldos/${today().slice(0, 7)}/respaldo_${today()}.json`;
   if (await spExiste(tok, path)) return;
   const data = { app: "Registros Hidroalcohólicos", exportado: new Date().toISOString(), por: who({ by: S.uid }), ordenes: S.list, alcohol: S.alcList || [], roles: S.roles, nombres: S.names, tanques: S.tqcfg || {}, equipos: S.eqcfg || null, catalogo: S.cat || null };
   await spUpload(tok, path, new Blob([JSON.stringify(data)], { type: "application/json" }), "application/json");
@@ -2525,13 +2534,13 @@ function spAuto() { if (spListo() && spPuede()) spMsal().then(() => { if (SP.acc
 
 function spCard() {
   if (!spPuede()) return "";
-  const c = S.spd || (S.spd = { ...spCfg() }), cerr = S.list.filter(o => estado(o)[2]), arch = cerr.filter(o => lastArch(o)).length;
+  const c = S.spd || (S.spd = { carpeta: SP_CARPETA, ...spCfg() }), cerr = S.list.filter(o => estado(o)[2]), arch = cerr.filter(o => lastArch(o)).length;
   const L = (id, lbl, ph, k) => `<label class="field" style="flex:1 1 240px"><span class="lbl">${lbl}</span><input id="${id}" value="${esc(c[k] || "")}" placeholder="${ph}" data-spd="${k}" data-fixed="1" ${ownerEff() ? "" : "disabled"}></label>`;
   return `<div class="card hd"><h3>Respaldo en SharePoint</h3>
     <p class="note" style="margin:0">Cada orden cerrada se guarda en SharePoint con su PDF, el registro firmado (JSON con los sellos de cada firma) y la recepción de Presea, ordenadas por formulario, año y mes. También se guarda un respaldo completo por día. Si la orden cambia después (por ejemplo, el tanque se vacía), se vuelve a guardar.</p>
-    <div class="row">${L("sp_site", "Sitio de SharePoint", "https://patagoniacandles.sharepoint.com/sites/Calidad", "site")}${L("sp_carpeta", "Carpeta", "Registros Hidroalcohólicos", "carpeta")}</div>
+    <div class="row">${L("sp_site", "Sitio de SharePoint", "https://patagoniacandles.sharepoint.com/sites/Calidad", "site")}${L("sp_carpeta", "Carpeta (dentro de Documentos del sitio)", SP_CARPETA, "carpeta")}</div>
     <div class="row">${L("sp_tenant", "Id. de inquilino (Tenant ID)", "xxxxxxxx-xxxx-…", "tenant")}${L("sp_client", "Id. de aplicación (Client ID)", "xxxxxxxx-xxxx-…", "client")}</div>
-    <label class="check" style="border:0;justify-content:flex-start;gap:10px"><input type="checkbox" id="sp_lib" ${c.liberar ? "checked" : ""} ${ownerEff() ? "" : "disabled"} data-spd="liberar" style="width:22px;min-height:22px"><span>Liberar espacio: después de guardar el PDF de Presea en SharePoint (y verificar su huella), borrarlo de Supabase.</span></label>
+    <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer"><input type="checkbox" id="sp_lib" ${c.liberar ? "checked" : ""} ${ownerEff() ? "" : "disabled"} data-spd="liberar" style="width:22px;min-height:22px;flex:0 0 auto;margin:0"><span>Liberar espacio: después de guardar el PDF de Presea en SharePoint (y verificar su huella), borrarlo de Supabase.</span></label>
     ${ownerEff() ? `<div class="bar"><button class="sm" data-act="spsave">Guardar configuración</button></div>` : ""}
     ${spListo() ? `<div class="kv"><div><span class="lbl">Órdenes cerradas</span><b class="num">${cerr.length}</b></div><div><span class="lbl">Guardadas en SharePoint</span><b class="num">${arch}</b></div><div><span class="lbl">Cuenta de Microsoft</span><b>${SP.account ? esc(SP.account.username) : "Sin conectar"}</b></div><div><span class="lbl">Última corrida</span><b>${SP.last ? fdt(SP.last.at) : "—"}</b></div></div>
       ${SP.err ? `<div class="banner bad">${esc(SP.err)}</div>` : ""}
@@ -2540,7 +2549,7 @@ function spCard() {
   </div>`;
 }
 Object.assign(ACT, {
-  spsave: async () => { const d = S.spd || {}; const v = { site: (d.site || "").trim().replace(/\/$/, ""), carpeta: (d.carpeta || "").trim() || "Registros Hidroalcohólicos", tenant: (d.tenant || "").trim(), client: (d.client || "").trim(), liberar: !!d.liberar };
+  spsave: async () => { const d = S.spd || {}; const v = { site: (d.site || "").trim().replace(/\/$/, ""), carpeta: (d.carpeta || "").trim() || SP_CARPETA, tenant: (d.tenant || "").trim(), client: (d.client || "").trim(), liberar: !!d.liberar };
     if (v.site && !/^https:\/\/[^/]+\.sharepoint\.com\//i.test(v.site + "/")) { toast("El sitio tiene que ser una dirección de SharePoint (https://…sharepoint.com/sites/…)."); return; }
     try { await S.db.doc("cfg/sharepoint").set(v); SP.msal = null; SP.siteId = null; S.spd = null; toast("Configuración guardada."); } catch (e) { toast("No se pudo guardar."); } render(); },
   sprun: () => spCorrer(true),
@@ -2657,6 +2666,14 @@ async function saSalir() { try { await sb.auth.signOut(); } catch (e) { } locati
 function saBar() { return `<button class="sm ghost" data-act="saclave">Cambiar contraseña</button><button class="sm ghost" data-act="sasalir">Salir</button>`; }
 
 /* ---------- administración de usuarios ---------- */
+// borrar datos de prueba: órdenes, firmas, alcohol, historial y PDF de Presea. Queda la configuración y los usuarios.
+function borrarCard() {
+  if (!ownerEff()) return "";
+  return `<div class="card hd" style="border-color:var(--bad)"><h3>Borrar datos de prueba</h3>
+    <p class="note" style="margin:0">Borra <b>todas</b> las órdenes de elaboración y envasado, las firmas, los registros de alcohol, el historial y los PDF de Presea guardados en Supabase. Con eso quedan vacías las bitácoras, el estado de equipos y la planilla de alcohol. <b>No</b> borra usuarios, roles, tanques, equipos, datos maestros ni la configuración de SharePoint, ni lo que ya esté guardado en SharePoint. No se puede deshacer.</p>
+    <div class="row" style="align-items:flex-end"><label class="field" style="flex:0 1 260px"><span class="lbl">Escribí BORRAR para confirmar</span><input id="bor_ok" autocomplete="off" data-fixed="1"></label>
+      <button class="pri" style="background:var(--bad);border-color:var(--bad)" data-act="borrar" ${S.busy ? "disabled" : ""}>Borrar todos los registros</button></div></div>`;
+}
 function adminSA() {
   if (!ownerEff()) return "";
   if (!S.perfiles) { S.perfiles = []; saCargarPerfiles(); }
@@ -2703,6 +2720,21 @@ Object.assign(ACT, {
       toast(`${nombre} dado de alta. Usuario: ${usuario}`); saCargarPerfiles();
     } catch (e) { toast(/already|registered|exists/i.test(e.message) ? "Ese usuario ya existe." : /password/i.test(e.message) ? "La contraseña no cumple los requisitos de Supabase (probá con 8+ caracteres, letras y números)." : "No se pudo dar de alta: " + e.message); }
     S.busy = false; render();
+  },
+  borrar: async () => {
+    if (V("bor_ok") !== "BORRAR") { toast("Escribí BORRAR (en mayúsculas) para confirmar."); return; }
+    if (!confirm("¿Borrar todas las órdenes y registros? No se puede deshacer.")) return;
+    S.busy = true; render();
+    try {
+      const { data, error } = await sb.rpc("admin_borrar_registros", { p_confirm: "BORRAR" });
+      if (error) throw error;
+      let pdfs = 0;
+      for (;;) { const { data: l, error: e2 } = await sb.storage.from("presea").list("", { limit: 1000 }); if (e2 || !l?.length) break;
+        const ids = l.map(x => x.name).filter(Boolean); if (!ids.length) break; const { error: e3 } = await sb.storage.from("presea").remove(ids); if (e3) break; pdfs += ids.length; if (l.length < 1000) break; }
+      S._ev = null; const el = document.getElementById("bor_ok"); if (el) el.value = "";
+      toast(`Listo: se borraron ${data?.ordenes ?? 0} órdenes, ${data?.alcohol ?? 0} registros de alcohol y ${pdfs} PDF de Presea. Se recarga la página…`); setTimeout(() => location.reload(), 2500);
+    } catch (e) { toast("No se pudo borrar: " + (e?.message || "error") + (/function|admin_borrar/i.test(e?.message || "") ? " · Corré primero supabase_actualizacion.sql en Supabase." : "")); }
+    finally { S.busy = false; render(); }
   },
   prview: async d => { const o = S.orders[d.id], v = o.sec.presea.v; const w = window.open("", "_blank");
     try { const b = await S.assets.fetch(v.asset); const u = URL.createObjectURL(new Blob([b], { type: "application/pdf" })); if (w) w.location = u; else location.href = u; }
