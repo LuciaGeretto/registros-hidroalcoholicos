@@ -797,6 +797,11 @@ function elabSections(o, L) {
     intro: (() => { const t = o.plan?.tq || o.em.v.tq; if (!t) return "Si limpiaste el tanque antes de elaborar, registralo acá con el alcohol que usaste."; const x = eqEstado("T" + t);
       return `Tanque ${esc(t)}: <span class="chip ${x.st[1]}">${x.st[0]}</span>${x.st[1] === "ok" && x.lim ? ` · limpio desde el ${fd(x.lim.e.v.fecha)}, vence el ${fd(x.venc)}` : " · registrá la limpieza antes de elaborar."}`; })(),
     pend: "Si se limpió el tanque, lo registra el operario." })));
+  // limpieza de la bomba después de limpiar el tanque (quedó sucia con el producto que tenía el tanque)
+  { const bE = bombasElab().length ? bombasElab() : eqArea("elab", true), lt = Object.values(s.limt || {}).some(x => limN(x)?.done);
+    out.push(secBox("", "Limpieza de bomba de elaboración · después del tanque", limChip(s.limtb) || `<span class="chip">${lt ? "Pendiente" : "Opcional"}</span>`, limBlock(o, L, "limtb", { eqs: bE, def: [filtroElabDef()].filter(Boolean),
+      intro: "Al terminar de limpiar el tanque, la bomba queda sucia con el producto que tenía el tanque: registrá su limpieza con la cantidad y el lote del alcohol.",
+      bloq: !lt ? "Se registra después de la limpieza del tanque." : "", pend: "La registra el operario después de limpiar el tanque." }))); }
   // 1 verificación
   const ver = s.ver;
   out.push(secBox("1", "Central de pesadas · verificación inicial", chipDone(ver), ver
@@ -819,13 +824,13 @@ function elabSections(o, L) {
   // 4 recirculación
   out.push(secBox("4", "Recirculación", s.rec?.e ? `<span class="chip ok">Completa</span>` : s.rec?.i ? `<span class="chip ac">En curso</span>` : `<span class="chip">Pendiente</span>`,
     `<ol class="instr"><li>Conectar la manguera a la válvula inferior, al otro extremo de la bomba y de ahí a la válvula de la parte superior.</li><li>Tiempo mínimo 10 min. Realizar la recirculación de forma moderada.</li></ol>` +
-    (s.rec?.i ? `<p class="note" style="margin:0">Equipo de filtrado: <b>${esc(eqName(s.rec.i.v?.eq || filtroElabDef() || "—"))}</b></p>` : eqArea("elab", true).filter(k => eqAll()[k].tipo === "filtro").length > 1 && L && can("operario") && s.cie ? `<label class="field" style="max-width:320px"><span class="lbl">Equipo de filtrado</span><select id="rec_eq">${eqArea("elab", true).filter(k => eqAll()[k].tipo === "filtro").map(k => `<option value="${esc(k)}">${esc(eqName(k))}</option>`).join("")}</select></label>` : "") +
+    (s.rec?.i ? `<p class="note" style="margin:0">Bomba de elaboración: <b>${esc(eqName(s.rec.i.v?.eq || filtroElabDef() || "—"))}</b></p>` : eqArea("elab", true).filter(k => esRecirc(eqAll()[k])).length > 1 && L && can("operario") && s.cie ? `<label class="field" style="max-width:320px"><span class="lbl">Bomba de elaboración</span><select id="rec_eq">${eqArea("elab", true).filter(k => esRecirc(eqAll()[k])).map(k => `<option value="${esc(k)}">${esc(eqName(k))}</option>`).join("")}</select></label>` : "") +
     stampPair(o, ["sec", "rec"], "recirculación", L && can("operario") && !!s.cie, 10, "Firmá el cierre de elaboración antes de recircular.")));
 
   // limpieza del filtro (después de recircular)
-  const fE = eqArea("elab", true);
-  out.push(secBox("", "Limpieza del filtro", limChip(s.lim) || `<span class="chip">Pendiente</span>`, limBlock(o, L, "lim", { eqs: fE, def: [s.rec?.i?.v?.eq || filtroElabDef()].filter(Boolean),
-    intro: "Al terminar la recirculación, registrá la limpieza del equipo de filtrado (y la cañería) con el alcohol que usaste.", bloq: !s.rec?.e ? "Se registra al terminar la recirculación." : "", pend: "La registra el operario al terminar la recirculación." })));
+  const fE = bombasElab().length ? bombasElab() : eqArea("elab", true);
+  out.push(secBox("", "Limpieza de bomba de elaboración", limChipK(s, "lim") || `<span class="chip">Pendiente</span>`, limBlock(o, L, "lim", { preguntar: true, eqs: fE, def: [s.rec?.i?.v?.eq || filtroElabDef()].filter(Boolean),
+    intro: "Al terminar la recirculación, registrá la limpieza de la bomba de elaboración (y la cañería): cantidad y lote del alcohol que usaste.", bloq: !s.rec?.e ? "Se registra al terminar la recirculación." : "", pend: "La registra el operario al terminar la recirculación." })));
   // 5 control de calidad y ajuste (antes del macerado)
   const ctlOk = ctlResuelto(o);
   out.push(secBox("5", "Control de Calidad · ajuste", ctlOk ? `<span class="chip ok">${ctlOk === "legacy" ? "—" : "Sin más ajustes"}</span>` : s.ctl ? `<span class="chip warn">Ajuste</span>` : `<span class="chip">Pendiente</span>`, ctlBlock(o, L)));
@@ -858,12 +863,12 @@ function ctlResuelto(o) {
 const ARC = { caj: "cajrec", aj: "ajrec" };
 function recAjDone(o, A, n) { return !!o.sec?.[ARC[A]]?.[n]?.e; }
 function recAjBlock(o, n, L, A) {
-  const s = o.sec || {}, key = ARC[A], g = s[key]?.[n] || {}, fE = eqArea("elab", true), lk = "lim" + key + n;
+  const s = o.sec || {}, key = ARC[A], g = s[key]?.[n] || {}, fE = bombasElab().length ? bombasElab() : eqArea("elab", true), lk = "lim" + key + n;
   let html = `<div class="line"><div class="line-h"><b>Recirculación después del ajuste ${n}</b>${g.e ? `<span class="chip ok">Completa</span>` : g.i ? `<span class="chip ac">En curso</span>` : `<span class="chip">Pendiente</span>`}</div>
-    <p class="note" style="margin:0">Recircular como mínimo 10 minutos con el equipo de filtrado para homogeneizar lo agregado.</p>`;
+    <p class="note" style="margin:0">Recircular como mínimo 10 minutos con la bomba de elaboración para homogeneizar lo agregado.</p>`;
   html += stampPair(o, ["sec", key, String(n)], "recirculación", L && can("operario"), 10, "La hace el operario de elaboración.");
   html += `</div>`;
-  if (g.e) html += `<div class="line"><div class="line-h"><b>Limpieza del filtro · ajuste ${n}</b>${limChip(s[lk]) || `<span class="chip">Pendiente</span>`}</div>${limBlock(o, L, lk, { eqs: fE, def: [g.i?.v?.eq || filtroElabDef()].filter(Boolean), pend: "La registra el operario al terminar la recirculación." })}</div>`;
+  if (g.e) html += `<div class="line"><div class="line-h"><b>Limpieza de bomba de elaboración · ajuste ${n}</b>${limChipK(s, lk) || `<span class="chip">Pendiente</span>`}</div>${limBlock(o, L, lk, { preguntar: true, eqs: fE, def: [g.i?.v?.eq || filtroElabDef()].filter(Boolean), pend: "La registra el operario al terminar la recirculación." })}</div>`;
   return html;
 }
 function ctlBlock(o, L) {
@@ -1903,17 +1908,22 @@ Object.assign(ACT, {
   },
 });
 /* ---------- equipos: bitácoras (P08 Bitácoras), identificación según estado (Form 40) y alcohol de limpieza (Form 302) ---------- */
-const EQ_TIPOS = { filtro: "Filtro", maquina: "Máquina", otro: "Otro" };
+const EQ_TIPOS = { bomba: "Bomba", filtro: "Filtro", maquina: "Máquina", otro: "Otro" };
 const EQ_AREAS = { elab: "Elaboración", semi: "Línea semiautomática", auto: "Línea automática" };
 const EQ_DEF = {
-  f_elab: { n: "Filtro elaboración", tipo: "filtro", area: "elab" },
+  f_elab: { n: "Bomba sector elaboración", tipo: "bomba", area: "elab" },
   f_semi: { n: "Filtro línea semiautomática", tipo: "filtro", area: "semi" },
   f_auto: { n: "Filtro línea automática", tipo: "filtro", area: "auto" },
   m_semi: { n: "Máquina línea semiautomática", tipo: "maquina", area: "semi" },
   m_auto: { n: "Máquina línea automática", tipo: "maquina", area: "auto" },
 };
 const LIM_VENCE_DIAS = 14;
-function eqCfg() { return S.eqcfg?.e || EQ_DEF; }
+function eqCfg() {
+  const e = S.eqcfg?.e || EQ_DEF;
+  // el "Filtro elaboración" de antes ahora se llama "Bomba sector elaboración"
+  if (e.f_elab && e.f_elab.n === "Filtro elaboración") return { ...e, f_elab: { ...e.f_elab, n: "Bomba sector elaboración", tipo: "bomba" } };
+  return e;
+}
 function alcCod() { return S.eqcfg?.alc || "ALCKG"; }
 // todos los equipos (tanques + filtros + máquinas) → { id: { n, tipo, area } }
 function eqAll() {
@@ -1926,7 +1936,9 @@ function eqAll() {
 }
 function eqName(id) { const e = eqAll()[id]; return e ? e.n : id.startsWith("T") ? "Tanque " + id.slice(1) : id; }
 function eqArea(area, sinTanques) { return Object.entries(eqAll()).filter(([, e]) => e.area === area && (!sinTanques || e.tipo !== "tanque")).map(([k]) => k); }
-function filtroElabDef() { return Object.entries(eqCfg()).find(([, e]) => e.area === "elab" && e.tipo === "filtro")?.[0] || null; }
+const esRecirc = e => e.tipo === "bomba" || e.tipo === "filtro";
+function filtroElabDef() { return Object.entries(eqCfg()).find(([, e]) => e.area === "elab" && esRecirc(e))?.[0] || null; }
+function bombasElab() { return Object.entries(eqCfg()).filter(([, e]) => e.area === "elab" && esRecirc(e)).map(([k]) => k); }
 
 function whoW(f) { if (f && !f.op) want(f.by); return who(f); }
 /* ---------- quién ve qué ---------- */
@@ -1968,6 +1980,7 @@ function limN(e) {
 }
 // tanque cargado en la limpieza del tanque de esta orden (la última)
 function limTq(o) { const m = o.sec?.limt || {}; const ks = Object.keys(m).map(Number).sort((a, b) => b - a); for (const n of ks) { const t = (limN(m[n])?.v.eqs || []).find(q => q.startsWith("T")); if (t) return t.slice(1); } return ""; }
+function limChipK(s, key) { return s?.["no" + key] ? `<span class="chip">No se limpió</span>` : limChip(s?.[key]); }
 function limChip(m) { const l = Object.values(m || {}).map(limN).filter(Boolean); return !l.length ? "" : l.some(x => !x.done) ? `<span class="chip ac">En curso</span>` : `<span class="chip ok">Registrada</span>`; }
 const limT = v => new Date(`${v.fecha}T${v.fin || v.ini || "00:00"}`).getTime();
 function prodE(o) { return (o.em.v.det || o.cod || "").replace(/^ZZ GRANEL\s*/i, ""); }
@@ -1996,12 +2009,18 @@ function eqEventos() {
       const eqs = s.lle.i.v?.eqs || (planOf(o).linea ? eqArea(planOf(o).linea, true) : []);
       eqs.forEach(eq => ev.push({ eq, k: "uso", op: "Envasado", o, prod: prodV(o), lote: o.lote, ini: s.lle.i.f.at, fin: s.lle.e?.f.at || null, by: s.lle.i.f, obs: s.pri?.cie ? `${fmt(s.pri.cie.v.net, 0)} un netas` : "" }));
     }
+    // al limpiar el tanque se usa la bomba de elaboración: queda sucia con el producto que tenía el tanque
+    if (o.tipo === "E") Object.entries(s.limt || {}).forEach(([n, raw]) => { const N = limN(raw); if (!N?.done) return; const t = (N.v.eqs || []).find(q => q.startsWith("T")); if (!t) return;
+      const b = s.limtb ? [...new Set(Object.values(s.limtb).flatMap(x => limN(x)?.v.eqs || []))] : []; const bs = b.length ? b : [filtroElabDef()].filter(Boolean);
+      bs.forEach(eq => ev.push({ eq, k: "uso", op: `Limpieza ${eqName(t).toLowerCase()}`, o, tqLim: t, prod: "", lote: "", ini: new Date(`${N.v.fecha}T${N.v.ini}`).toISOString(), fin: new Date(`${N.v.fecha}T${N.v.fin}`).toISOString(), by: N.f, obs: `Con el producto que tenía el ${eqName(t).toLowerCase()}` })); });
     limKeys(o).forEach(key => Object.entries(s[key] || {}).forEach(([n, raw]) => { const N = limN(raw); if (!N?.done) return; const e = { v: N.v, f: N.f }, ok = s[key + "ok"]?.[n];
       (e.v.eqs || []).forEach(eq => ev.push({ eq, k: "lim", op: "Limpieza", o, key, n, e, ok, prod: "", lote: o.lote, ini: e.v.fecha + "T" + e.v.ini, fin: e.v.fecha + "T" + e.v.fin, t: limT(e.v), by: e.f, obs: [e.v.kg > 0 ? `${fmt(e.v.kg, 1)} kg alcohol${e.v.lote ? " lote " + e.v.lote : ""}` : "Sin alcohol", ok ? "aprobada" : "sin aprobar", e.v.obs].filter(Boolean).join(" · ") })); }));
   });
   const ts = x => x.t || new Date(x.ini).getTime();
   ev.forEach(x => x.ts = ts(x)); ev.sort((a, b) => a.ts - b.ts);
-  ev.forEach(x => { if (x.k === "uso") x.aroma = aromaOrden(x.o); });
+  ev.forEach(x => { if (x.k === "uso" && !x.tqLim) x.aroma = aromaOrden(x.o); });
+  ev.forEach(x => { if (!x.tqLim) return; const st = new Date(x.ini).getTime(); let p = null; for (const u of ev) { if (u.eq === x.tqLim && u.k === "uso" && !u.tqLim && u.o !== x.o && new Date(u.ini).getTime() < st + 6e4) p = u; }
+    x.aroma = p ? p.aroma : ""; if (p) { x.prod = p.prod; x.lote = p.lote; x.o = p.o; } else x.o = null; });
   ev.forEach(x => { if (x.k !== "lim") return; const st = new Date(`${x.e.v.fecha}T${x.e.v.ini || "00:00"}`).getTime(); let a = ""; for (const u of ev) { if (u.eq === x.eq && u.k === "uso" && new Date(u.ini).getTime() < st + 6e4) a = u.aroma; } x.aroma = a; });
   S._ev = { l: S.list, c: S.eqcfg, t: S.tqcfg, v: ev }; return ev;
 }
@@ -2051,10 +2070,16 @@ function limBlock(o, L, key, opts) {
       ${v.obs ? `<p class="note">Obs.: ${esc(v.obs)}</p>` : ""}${raw.f ? sigLine(raw, "Limpió") : sigLine(raw.i, "Inicio") + sigLine(raw.e, "Fin")}
       ${ok ? sigLine(ok, "Aprobó (Supervisor)") : L && can("supervisor") ? `<div class="bar"><span class="note">Falta la aprobación del supervisor.</span><button class="sp" data-act="limok" data-id="${esc(o.id)}" data-k="${key}" data-n="${n}">Aprobar limpieza</button></div>` : `<p class="note">Pendiente de aprobación del supervisor.</p>`}</div>`;
   });
+  const no = o.sec?.["no" + key];
+  if (no) return html + `<div class="line"><div class="line-h"><b>No se limpió la bomba</b><span class="chip">Sin limpieza</span></div>${no.v.obs ? `<p class="note" style="margin:0">Motivo: ${esc(no.v.obs)}</p>` : ""}${sigLine(no, "Indicó")}</div>`;
   if (o.sec?.anu) return html || pend("—");
   if (!puede) return html + (ks.length ? "" : pend(opts.pend || "La carga el operario."));
   if (abierta != null) return html;
   if (opts.bloq) return html + pend(opts.bloq);
+  // ¿hace falta limpiar? (por ejemplo, no si lo que sigue es el mismo aroma)
+  if (opts.preguntar && !ks.length && !S.limSi?.[o.id + key]) return html + `<div class="line"><b>¿Desea limpiar la bomba?</b>
+    <p class="note" style="margin:0">Si lo próximo que pasa por la bomba es el mismo aroma, puede no hacer falta.</p>
+    <div class="bar"><button class="pri" data-act="limsi" data-k="${key}">Sí, limpiar</button><button data-act="limno" data-k="${key}">No limpiar</button></div></div>`;
   const hechos = new Set(ks.flatMap(n => limN(m[n])?.v.eqs || [])), faltan = (opts.eqs || []).filter(q => !hechos.has(q));
   const fk = o.id + key, open = !ks.length || S.limMas?.[fk] || (!opts.tanque && faltan.length && ks.length);
   const elegido = faltan.find(q => (opts.def || opts.eqs).includes(q)) || faltan[0] || (opts.eqs || [])[0];
@@ -2068,6 +2093,9 @@ function limBlock(o, L, key, opts) {
 }
 Object.assign(ACT, {
   linsel: d => { if (S.preview) S.previewLinea = d.v || null; else setLinea(d.v || null); S.menu = false; render(); },
+  limsi: d => { S.limSi = { ...(S.limSi || {}), [cur().id + d.k]: true }; render(); },
+  limno: d => ask("No limpiar la bomba", `<label class="field"><span class="lbl">Motivo</span><input id="limno_m" value="Mismo aroma"></label><p class="note">La bomba queda como "Para lavar" con el producto actual hasta la próxima limpieza.</p>`,
+    () => sign(cur(), ["sec", "no" + d.k], { no: true, obs: V("limno_m") || "Mismo aroma" }), "Firmar"),
   limmas: d => { S.limMas = { ...(S.limMas || {}), [d.k]: true }; render(); },
   limok: d => { const o = S.orders[d.id]; if (!o) return; const v = limN(o.sec[d.k][d.n]).v;
     ask("Aprobar limpieza", `<p>${esc((v.eqs || []).map(eqName).join(", "))} · ${fd(v.fecha)} ${esc(v.ini)}–${esc(v.fin)} · ${fmt(v.kg || 0, 1)} kg de alcohol</p>`, () => sign(o, ["sec", d.k + "ok", d.n], { ok: true }), "Aprobar y firmar"); },
@@ -2107,8 +2135,8 @@ function eqFiltroArea() {
 function eqLista() { const all = eqAll(), a = S.view.eqa || ""; return eqVisibles().filter(k => !a || all[k].area === a); }
 function estView() {
   const base = eqLista(), all = eqAll(), q = S.view.eqf || "";
-  const ids = base.filter(k => !q || k === q || (q === "*tanque" && all[k].tipo === "tanque") || (q === "*filtro" && all[k].tipo === "filtro") || (q === "*maquina" && all[k].tipo === "maquina"));
-  const tipos = [["*tanque", "Todos los tanques", "tanque"], ["*filtro", "Todos los filtros", "filtro"], ["*maquina", "Todas las máquinas", "maquina"]].filter(t => base.some(k => all[k].tipo === t[2]));
+  const ids = base.filter(k => !q || k === q || (q === "*tanque" && all[k].tipo === "tanque") || (q === "*bomba" && all[k].tipo === "bomba") || (q === "*filtro" && all[k].tipo === "filtro") || (q === "*maquina" && all[k].tipo === "maquina"));
+  const tipos = [["*tanque", "Todos los tanques", "tanque"], ["*bomba", "Todas las bombas", "bomba"], ["*filtro", "Todos los filtros", "filtro"], ["*maquina", "Todas las máquinas", "maquina"]].filter(t => base.some(k => all[k].tipo === t[2]));
   const sel = `<label class="field" style="max-width:360px"><span class="lbl">Equipo</span><select id="eq_f" data-bit="eqf"><option value="">Todos los equipos</option>
     ${tipos.map(t => `<option value="${t[0]}" ${q === t[0] ? "selected" : ""}>${t[1]}</option>`).join("")}
     <optgroup label="Un equipo">${base.map(k => `<option value="${esc(k)}" ${q === k ? "selected" : ""}>${esc(all[k].n)}</option>`).join("")}</optgroup></select></label>`;
